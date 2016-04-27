@@ -2278,6 +2278,18 @@ static void processLibexecDir (const char *const option,
 	}
 }
 
+static void processPatternLengthLimitOption(const char *const option, const char *const parameter)
+{
+	if (parameter == NULL || parameter[0] == '\0')
+		error(FATAL, "A parameter is needed after \"%s\" option", option);
+
+	if (atol(parameter) < 1)
+		error(FATAL, "-%s: Invalid pattern length limit", option);
+
+	Option.patternLengthLimit = atol(parameter);
+}
+
+
 static void processMaxRecursionDepthOption (const char *const option, const char *const parameter)
 {
 	if (parameter == NULL || parameter[0] == '\0')
@@ -2341,6 +2353,7 @@ static parametricOption ParametricOptions [] = {
 	{ "list-pseudo-tags",       processListPseudoTagsOptions,   TRUE,   STAGE_ANY },
 	{ "list-regex-flags",       processListRegexFlagsOptions,   TRUE,   STAGE_ANY },
 	{ "_list-roles",            processListRolesOptions,        TRUE,   STAGE_ANY },
+	{ "pattern-length-limit",   processPatternLengthLimitOption,TRUE,   STAGE_ANY },
 	{ "maxdepth",               processMaxRecursionDepthOption, TRUE,   STAGE_ANY },
 	{ "options",                processOptionFile,              FALSE,  STAGE_ANY },
 	{ "pseudo-tags",            processPseudoTags,              FALSE,  STAGE_ANY },
