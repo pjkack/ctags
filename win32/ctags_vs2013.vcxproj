@@ -263,7 +263,6 @@
     <ClInclude Include="..\parsers\cxx\cxx_token_chain.h" />
     <ClInclude Include="..\main\promise.h" />
     <ClInclude Include="..\main\dependency.h" />
-    <ClInclude Include="..\main\gcc-attr.h" />
     <ClInclude Include="..\parsers\meta-make.h" />
     <ClInclude Include="..\parsers\meta-iniconf.h" />
     <ClInclude Include="..\parsers\meta-m4.h" />
