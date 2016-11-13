@@ -249,6 +249,7 @@
     <ClCompile Include="..\parsers\iniconf.c">
       <Filter>Source Files\Main</Filter>
     </ClCompile>
+    <ClCompile Include="..\main\lregex.c">
       <Filter>Source Files\Main</Filter>
     </ClCompile>
     <ClCompile Include="..\main\lxcmd.c">
