@@ -75,6 +75,14 @@ CXXToken * cxxTokenChainLastPossiblyNestedTokenOfType(
 		unsigned int uTokenTypes
 	);
 
+// Find the first token with one of the specified types. Look also
+// in nested () chains (only (), not [], {}...)
+CXXToken * cxxTokenChainFirstPossiblyNestedTokenOfType(
+		CXXTokenChain * tc,
+		unsigned int uTokenTypes,
+		CXXTokenChain ** ppParentChain
+	);
+
 // Find the first token with type that is not one of the specified types
 CXXToken * cxxTokenChainFirstTokenNotOfType(
 		CXXTokenChain * tc,
@@ -121,7 +129,7 @@ CXXToken * cxxTokenChainTakeLast(CXXTokenChain * tc);
 CXXToken * cxxTokenChainTakeAt(CXXTokenChain * tc,int index);
 #endif
 void cxxTokenChainTake(CXXTokenChain * tc,CXXToken * t);
-boolean cxxTokenChainTakeRecursive(CXXTokenChain * tc,CXXToken * t);
+bool cxxTokenChainTakeRecursive(CXXTokenChain * tc,CXXToken * t);
 
 // Destroy the last token
 #define cxxTokenChainDestroyLast(tc) \
@@ -135,6 +143,7 @@ void cxxTokenChainDestroyRange(CXXTokenChain * pChain,CXXToken * from,CXXToken *
 
 void cxxTokenChainAppend(CXXTokenChain * tc,CXXToken * t);
 void cxxTokenChainPrepend(CXXTokenChain * tc,CXXToken * t);
+void cxxTokenChainInsertAfter(CXXTokenChain * tc,CXXToken * before,CXXToken * t);
 
 void cxxTokenChainMoveEntries(
 		CXXTokenChain * src,
@@ -199,6 +208,14 @@ CXXToken * cxxTokenChainExtractRange(
 		CXXToken * to,
 		unsigned int uFlags
 	);
+CXXToken * cxxTokenChainExtractRangeWithExclusions(
+		CXXToken * from,
+		CXXToken * to,
+		unsigned int uFlags,
+		CXXToken ** pExcludedTokens,
+		unsigned int uExcludedTokenCount
+	);
+
 CXXToken * cxxTokenChainExtractIndexRange(
 		CXXTokenChain * tc,
 		int iFirstIndex,
@@ -226,8 +243,20 @@ int cxxTokenChainFirstKeywordIndex(
 		enum CXXKeyword eKeyword
 	);
 
+#if 0
+// This is working code but it's unused and coveralls complains.. sigh.
+// Remove the #if above if needed.
+CXXToken * cxxTokenChainFirstKeyword(
+		CXXTokenChain * tc,
+		enum CXXKeyword eKeyword
+	);
+#endif
+
 // Assuming that pChain contains a type name, attempt to normalize the
 // spacing within the whole chain.
+//
+// Please note that this will work also for entire function signatures
+// (since type names can contain function pointers which have signatures)
 void cxxTokenChainNormalizeTypeNameSpacing(
 		CXXTokenChain * pChain
 	);

@@ -15,6 +15,8 @@
 #include <string.h>
 #include <ctype.h>
 
+#include "meta-make.h"
+
 #include "kind.h"
 #include "options.h"
 #include "parse.h"
@@ -23,11 +25,12 @@
 #include "vstring.h"
 #include "xtag.h"
 
+
 /*
 *   DATA DEFINITIONS
 */
 typedef enum {
-	K_MACRO, K_TARGET, K_INCLUDE
+	K_MACRO, K_TARGET, K_INCLUDE,
 } makeKind;
 
 typedef enum {
@@ -36,16 +39,17 @@ typedef enum {
 } makeMakefileRole;
 
 static roleDesc MakeMakefileRoles [] = {
-        { TRUE, "included", "included" },
-	{ TRUE, "optional", "optionally included"},
+	{ true, "included", "included" },
+	{ true, "optional", "optionally included"},
 };
 
 static kindOption MakeKinds [] = {
-	{ TRUE, 'm', "macro",  "macros"},
-	{ TRUE, 't', "target", "targets"},
-	{ TRUE, 'I', "makefile", "makefiles",
-	  .referenceOnly = TRUE, ATTACH_ROLES(MakeMakefileRoles)},
+	{ true, 'm', "macro",  "macros"},
+	{ true, 't', "target", "targets"},
+	{ true, 'I', "makefile", "makefiles",
+	  .referenceOnly = true, ATTACH_ROLES(MakeMakefileRoles)},
 };
+
 
 /*
 *   FUNCTION DEFINITIONS
@@ -80,26 +84,57 @@ static int skipToNonWhite (int c)
 	return c;
 }
 
-static boolean isIdentifier (int c)
+static bool isIdentifier (int c)
 {
-	return (boolean)(c != '\0' && (isalnum (c)  ||  strchr (".-_/$(){}%", c) != NULL));
+	return (bool)(c != '\0' && (isalnum (c)  ||  strchr (".-_/$(){}%", c) != NULL));
 }
 
-static boolean isSpecialTarget (vString *const name)
+static bool isSpecialTarget (vString *const name)
 {
 	size_t i = 0;
 	/* All special targets begin with '.'. */
 	if (vStringLength (name) < 1 || vStringChar (name, i++) != '.') {
-		return FALSE;
+		return false;
 	}
 	while (i < vStringLength (name)) {
 		char ch = vStringChar (name, i++);
 		if (ch != '_' && !isupper (ch))
 		{
-			return FALSE;
+			return false;
 		}
 	}
-	return TRUE;
+	return true;
+}
+
+static void makeSimpleMakeTag (vString *const name, kindOption *MakeKinds, makeKind kind)
+{
+	static int make = LANG_IGNORE;
+
+	if (make == LANG_IGNORE)
+		make = getNamedLanguage ("Make", 0);
+
+	if (! isLanguageEnabled (make))
+		return;
+
+	pushLanguage (make);
+	makeSimpleTag (name, MakeKinds, kind);
+	popLanguage ();
+}
+
+static void makeSimpleMakeRefTag (const vString* const name, kindOption* const kinds, const int kind,
+				  int roleIndex)
+{
+	static int make = LANG_IGNORE;
+
+	if (make == LANG_IGNORE)
+		make = getNamedLanguage ("Make", 0);
+
+	if (! isLanguageEnabled (make))
+		return;
+
+	pushLanguage (make);
+	makeSimpleRefTag (name, kinds, kind, roleIndex);
+	popLanguage ();
 }
 
 static void newTarget (vString *const name)
@@ -109,25 +144,28 @@ static void newTarget (vString *const name)
 	{
 		return;
 	}
-	makeSimpleTag (name, MakeKinds, K_TARGET);
+	makeSimpleMakeTag (name, MakeKinds, K_TARGET);
 }
 
-static void newMacro (vString *const name)
+static void newMacro (vString *const name, bool with_define_directive, bool appending, struct makeParserClient *client, void *data)
 {
-	makeSimpleTag (name, MakeKinds, K_MACRO);
+	if (!appending)
+		makeSimpleMakeTag (name, MakeKinds, K_MACRO);
+	if (client->newMacro)
+		client->newMacro (client, name, with_define_directive, appending, data);
 }
 
-static void newInclude (vString *const name, boolean optional)
+static void newInclude (vString *const name, bool optional)
 {
-	makeSimpleRefTag (name, MakeKinds, K_INCLUDE,
-			  optional? R_INCLUDE_OPTIONAL: R_INCLUDE_GENERIC);
+	makeSimpleMakeRefTag (name, MakeKinds, K_INCLUDE,
+			      optional? R_INCLUDE_OPTIONAL: R_INCLUDE_GENERIC);
 }
 
-static boolean isAcceptableAsInclude (vString *const name)
+static bool isAcceptableAsInclude (vString *const name)
 {
 	if (strcmp (vStringValue (name), "$") == 0)
-		return FALSE;
-	return TRUE;
+		return false;
+	return true;
 }
 
 static void readIdentifier (const int first, vString *const id)
@@ -137,7 +175,7 @@ static void readIdentifier (const int first, vString *const id)
 	vStringClear (id);
 	while (isIdentifier (c) || (depth > 0 && c != EOF && c != '\n'))
 	{
-		if (c == '(' || c == '}')
+		if (c == '(' || c == '{')
 			depth++;
 		else if (depth > 0 && (c == ')' || c == '}'))
 			depth--;
@@ -145,17 +183,26 @@ static void readIdentifier (const int first, vString *const id)
 		c = nextChar ();
 	}
 	ungetcToInputFile (c);
-	vStringTerminate (id);
 }
 
-static void findMakeTags (void)
+extern void runMakeParser (struct makeParserClient *client, void *data)
 {
 	stringList *identifiers = stringListNew ();
-	boolean newline = TRUE;
-	boolean in_define = FALSE;
-	boolean in_rule = FALSE;
-	boolean variable_possible = TRUE;
+	bool newline = true;
+	bool in_define = false;
+	bool in_value  = false;
+	bool in_rule = false;
+	bool variable_possible = true;
+	bool appending = false;
 	int c;
+
+	static int make = LANG_IGNORE;
+
+	if (make == LANG_IGNORE)
+	{
+		make = getNamedLanguage ("Make", 0);
+		initializeParser (make);
+	}
 
 	while ((c = nextChar ()) != EOF)
 	{
@@ -169,14 +216,17 @@ static void findMakeTags (void)
 					c = nextChar ();
 				}
 				else if (c != '\n')
-					in_rule = FALSE;
+					in_rule = false;
 			}
+			else if (in_value)
+				in_value = false;
+
 			stringListClear (identifiers);
-			variable_possible = (boolean)(!in_rule);
-			newline = FALSE;
+			variable_possible = (bool)(!in_rule);
+			newline = false;
 		}
 		if (c == '\n')
-			newline = TRUE;
+			newline = true;
 		else if (isspace (c))
 			continue;
 		else if (c == '#')
@@ -186,6 +236,13 @@ static void findMakeTags (void)
 			c = nextChar ();
 			ungetcToInputFile (c);
 			variable_possible = (c == '=');
+		}
+		else if (variable_possible && c == '+')
+		{
+			c = nextChar ();
+			ungetcToInputFile (c);
+			variable_possible = (c == '=');
+			appending = true;
 		}
 		else if (variable_possible && c == ':' &&
 				 stringListCount (identifiers) > 0)
@@ -198,15 +255,16 @@ static void findMakeTags (void)
 				for (i = 0; i < stringListCount (identifiers); i++)
 					newTarget (stringListItem (identifiers, i));
 				stringListClear (identifiers);
-				in_rule = TRUE;
+				in_rule = true;
 			}
 		}
 		else if (variable_possible && c == '=' &&
 				 stringListCount (identifiers) == 1)
 		{
-			newMacro (stringListItem (identifiers, 0));
-			skipLine ();
-			in_rule = FALSE;
+			newMacro (stringListItem (identifiers, 0), false, appending, client, data);
+			in_value = true;
+			in_rule = false;
+			appending = false;
 		}
 		else if (variable_possible && isIdentifier (c))
 		{
@@ -214,15 +272,18 @@ static void findMakeTags (void)
 			readIdentifier (c, name);
 			stringListAdd (identifiers, name);
 
+			if (in_value && client->valuesFound)
+				client->valuesFound (client, name, data);
+
 			if (stringListCount (identifiers) == 1)
 			{
 				if (in_define && ! strcmp (vStringValue (name), "endef"))
-					in_define = FALSE;
+					in_define = false;
 				else if (in_define)
 					skipLine ();
 				else if (! strcmp (vStringValue (name), "define"))
 				{
-					in_define = TRUE;
+					in_define = true;
 					c = skipToNonWhite (nextChar ());
 					vStringClear (name);
 					/* all remaining characters on the line are the name -- even spaces */
@@ -233,9 +294,8 @@ static void findMakeTags (void)
 					}
 					if (c == '\n')
 						ungetcToInputFile (c);
-					vStringTerminate (name);
 					vStringStripTrailing (name);
-					newMacro (name);
+					newMacro (name, true, false, client, data);
 				}
 				else if (! strcmp (vStringValue (name), "export"))
 					stringListClear (identifiers);
@@ -243,7 +303,7 @@ static void findMakeTags (void)
 					 || ! strcmp (vStringValue (name), "sinclude")
 					 || ! strcmp (vStringValue (name), "-include"))
 				{
-					boolean optional = (vStringValue (name)[0] == 'i')? FALSE: TRUE;
+					bool optional = (vStringValue (name)[0] == 'i')? false: true;
 					while (1)
 					{
 						c = skipToNonWhite (nextChar ());
@@ -269,13 +329,30 @@ static void findMakeTags (void)
 							break;
 					}
 				}
+				else
+				{
+					if (client->directiveFound)
+						client->directiveFound (client, name, data);
+
+				}
 			}
 		}
 		else
-			variable_possible = FALSE;
+			variable_possible = false;
 	}
 	stringListDelete (identifiers);
 }
+
+static void findMakeTags (void)
+{
+	struct makeParserClient client = {
+		.valuesFound    = NULL,
+		.directiveFound = NULL,
+		.newMacro = NULL,
+	};
+	runMakeParser (&client, NULL);
+}
+
 
 extern parserDefinition* MakefileParser (void)
 {
@@ -289,5 +366,3 @@ extern parserDefinition* MakefileParser (void)
 	def->parser     = findMakeTags;
 	return def;
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */

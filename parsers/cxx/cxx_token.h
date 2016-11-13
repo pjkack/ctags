@@ -69,7 +69,7 @@ typedef struct _CXXToken
 	vString * pszWord;
 	enum CXXKeyword eKeyword;
 	CXXTokenChain * pChain; // this is NOT the parent chain!
-	boolean bFollowedBySpace;
+	bool bFollowedBySpace;
 
 	int iLineNumber;
 	MIOPos oFilePosition;
@@ -81,16 +81,17 @@ typedef struct _CXXToken
 	// scope information. Only cxxScope* functions can make sense of it.
 	// In other contexts these are simply left
 	// uninitialized and must be treated as undefined.
-	unsigned char uInternalScopeKind;
+	unsigned char uInternalScopeType;
 	unsigned char uInternalScopeAccess;
 } CXXToken;
 
 CXXToken * cxxTokenCreate(void);
 void cxxTokenDestroy(CXXToken * t);
 
-enum CXXTagKind;
+// A shortcut for quickly creating keyword tokens.
+CXXToken * cxxTokenCreateKeyword(int iLineNumber,MIOPos oFilePosition,enum CXXKeyword eKeyword);
 
-CXXToken * cxxTokenCreateAnonymousIdentifier(enum CXXTagKind k);
+CXXToken * cxxTokenCreateAnonymousIdentifier(unsigned int uTagKind);
 
 #define cxxTokenTypeIsOneOf(_pToken,_uTypes) (_pToken->eType & (_uTypes))
 #define cxxTokenTypeIs(_pToken,_eType) (_pToken->eType == _eType)

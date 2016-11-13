@@ -1,4 +1,4 @@
-#LETTER	NAME	ENABLED	LANGUAGE	XFMTCHAR	DESCRIPTION
+#LETTER	NAME	ENABLED	LANGUAGE	XFMT	DESCRIPTION
 N	name	on	NONE	TRUE	tag name (fixed field)
 F	input	on	NONE	TRUE	input file (fixed field)
 P	pattern	on	NONE	TRUE	pattern (fixed field)
@@ -12,20 +12,22 @@ l	language	off	NONE	TRUE	Language of input file containing tag
 m	implementation	off	NONE	TRUE	Implementation information
 n	line	off	NONE	TRUE	Line number of tag definition
 S	signature	off	NONE	TRUE	Signature of routine (e.g. prototype or parameter list)
-s	NONE	on	NONE	TRUE	Scope of tag definition (WARNING: this doesn't work well as a format letter)
+s	NONE	on	NONE	TRUE	Scope of tag definition (`p' can be used for printing its kind)
 t	typeref	on	NONE	TRUE	Type and name of a variable or typedef
-z	kind	off	NONE	FALSE	Include the "kind:" key in kind field (use k or K)
+z	kind	off	NONE	TRUE	Include the "kind:" key in kind field (use k or K) in tags output, kind full name in xref output
 r	role	off	NONE	TRUE	Role
 R	NONE	off	NONE	TRUE	Marker (R or D) representing whether tag is definition or reference
-Z	scope	off	NONE	FALSE	Include the "scope:" key in scope field (use s)
+Z	scope	off	NONE	TRUE	Include the "scope:" key in scope field (use s) in tags output, scope name in xref output
 E	extra	off	NONE	TRUE	Extra tag type information
 x	xpath	off	NONE	TRUE	xpath for the tag
--	end	off	C	TRUE	end lines of various constructs
+p	scopeKind	off	NONE	TRUE	Kind of scope as full name
+e	end	off	NONE	TRUE	end lines of various items
 -	properties	off	C	TRUE	properties (static, inline, mutable,...)
--	end	off	C++	TRUE	end lines of various constructs
+-	properties	off	C++	TRUE	properties (static, inline, mutable,...)
 -	template	off	C++	TRUE	template parameters
 -	captures	off	C++	TRUE	lambda capture list
--	properties	off	C++	TRUE	properties (static, virtual, inline, mutable,...)
+-	name	on	C++	TRUE	aliased names
+-	decorators	off	Python	TRUE	decorators on functions and classes
 -	sectionMarker	off	reStructuredText	TRUE	character used for declaring section
 #
 Foo	input.java	/^abstract public class Foo extends Bar$/

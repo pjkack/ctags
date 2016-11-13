@@ -16,7 +16,7 @@
 #include "routines.h"
 #include "selectors.h"
 
-static const tagRegexTable const rexxTagRegexTable [] = {
+static tagRegexTable rexxTagRegexTable [] = {
 	{"^([A-Za-z0-9@#$\\.!?_]+)[ \t]*:", "\\1",
 	 "s,subroutine,subroutines", NULL},
 };
@@ -38,5 +38,3 @@ extern parserDefinition* RexxParser (void)
 	def->selectLanguage = selectors;
 	return def;
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */

@@ -9,11 +9,12 @@
 #define CTAGS_MAIN_KIND_H
 
 #include "general.h"
+#include "types.h"
 #include "routines.h"		/* for STRINGIFY */
 #include "vstring.h"
 
 typedef struct sRoleDesc {
-	boolean enabled;
+	bool enabled;
 	const char* name;		  /* role name */
 	const char* description;	  /* displayed in --help output */
 } roleDesc;
@@ -49,26 +50,41 @@ typedef struct sScopeSeparator {
 	const char *separator;
 } scopeSeparator;
 
-typedef struct sKindOption {
-	boolean enabled;          /* are tags for kind enabled? */
+struct sKindOption {
+	bool enabled;          /* are tags for kind enabled? */
 	char  letter;               /* kind letter */
 	const char* name;		  /* kind name */
 	const char* description;	  /* displayed in --help output */
-	boolean referenceOnly;
+	bool referenceOnly;
 	int nRoles;		/* The number of role elements. */
 	roleDesc *roles;
 	scopeSeparator *separators;
 	unsigned int separatorCount;
-} kindOption;
+
+	/* Usage of `syncWith' field is a bit tricky.
+
+	   If `LANG_AUTO' is specified to `syncWith' field of a kind
+	   (target kind), the main part of ctags updtes the field with
+	   the id of a  parser (master parser) when initializing
+	   parsers. It also updates `slave' and `master' fields.
+
+	   If the value other than `LANG_AUTO' is specified,
+	   the main part does nothing. */
+	langType syncWith;
+	kindOption *slave;
+	kindOption *master;
+};
 
 #define ATTACH_ROLES(RS) .nRoles = ARRAY_SIZE(RS), .roles = RS
 #define ATTACH_SEPARATORS(S) .separators = S, .separatorCount = ARRAY_SIZE(S)
 
 /* The value of `tabSeparated' is meaningfull only when `allKindFields' is true. */
-extern void printKind (const kindOption* const kind, boolean allKindFields, boolean indent,
-		       boolean tabSeparated);
-extern void printKindListHeader (boolean indent, boolean tabSeparated);
+extern void printKind (const kindOption* const kind, bool allKindFields, bool indent,
+		       bool tabSeparated);
+extern void printKindListHeader (bool indent, bool tabSeparated);
 extern const char *scopeSeparatorFor (const kindOption *kind, char parentLetter);
+
+extern void enableKind (kindOption *kind, bool enable);
 
 #define PR_KIND_STR(X) PR_KIND_WIDTH_##X
 #define PR_KIND_FMT(X,T) "%-" STRINGIFY(PR_KIND_STR(X)) STRINGIFY(T)

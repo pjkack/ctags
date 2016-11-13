@@ -13,7 +13,12 @@ title()
 
 ignore_xml()
 {
-    grep -v 'Glade\|Ant\|Maven2'
+    grep -v 'Glade\|Ant\|Maven2\|XSLT'
+}
+
+ignore_yaml()
+{
+    grep -v 'Yaml'
 }
 
 # When introducing newly rewritten parser, we would like to provide
@@ -27,16 +32,16 @@ ignore_old()
 }
 
 title ''
-${CTAGS} --quiet --options=NONE --_list-roles= | ignore_xml | ignore_old
+${CTAGS} --quiet --options=NONE --_list-roles= | ignore_xml | ignore_old | ignore_yaml
 
-title 'all:*'
-${CTAGS} --quiet --options=NONE --_list-roles='all:*' | ignore_xml | ignore_old
+title 'all.*'
+${CTAGS} --quiet --options=NONE --_list-roles='all.*' | ignore_xml | ignore_old | ignore_yaml
 
-title 'C:*'
-${CTAGS} --quiet --options=NONE --_list-roles='C:*'
+title 'C.*'
+${CTAGS} --quiet --options=NONE --_list-roles='C.*'
 
-title 'all:h'
-${CTAGS} --quiet --options=NONE --_list-roles='all:h' | ignore_xml | ignore_old
+title 'all.h'
+${CTAGS} --quiet --options=NONE --_list-roles='all.h' | ignore_xml | ignore_old | ignore_yaml
 
-title 'Sh:s'
-${CTAGS} --quiet --options=NONE --_list-roles='Sh:s'
+title 'Sh.s'
+${CTAGS} --quiet --options=NONE --_list-roles='Sh.s'

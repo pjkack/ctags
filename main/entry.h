@@ -13,6 +13,7 @@
 *   INCLUDE FILES
 */
 #include "general.h"  /* must always come first */
+#include "types.h"
 
 #include <stdio.h>
 
@@ -21,11 +22,13 @@
 #include "vstring.h"
 #include "xtag.h"
 #include "mio.h"
+#include "nestlevel.h"
 
 /*
 *   MACROS
 */
 #define WHOLE_FILE  -1L
+#define includeExtensionFlags()         (Option.tagFileFormat > 1)
 
 /*
 *   DATA DECLARATIONS
@@ -37,7 +40,7 @@ typedef struct sTagField {
 
 /*  Information about the current tag candidate.
  */
-typedef struct sTagEntryInfo {
+struct sTagEntryInfo {
 	unsigned int lineNumberEntry:1;  /* pattern or line number entry */
 	unsigned int isFileScope    :1;  /* is tag visible only within input file? */
 	unsigned int isFileEntry    :1;  /* is this just an entry for a file name? */
@@ -49,6 +52,7 @@ typedef struct sTagEntryInfo {
 	unsigned long lineNumber;     /* line number of tag */
 	const char* pattern;	      /* pattern for locating input line
 				       * (may be NULL if not present) *//*  */
+	unsigned int boundaryInfo;    /* info about nested input stream */
 	MIOPos      filePosition;     /* file position of line containing tag */
 	const char* language;         /* language of input file */
 	const char *inputFileName;   /* name of input file */
@@ -64,10 +68,9 @@ typedef struct sTagEntryInfo {
 
 		const kindOption* scopeKind;
 		const char* scopeName;
-#define SCOPE_NIL 0
 		int         scopeIndex;   /* cork queue entry for upper scope tag.
 					     This field is meaningful if the value
-					     is not SCOPE_NIL and scope[0]  and scope[1] are
+					     is not CORK_NIL and scope[0]  and scope[1] are
 					     NULL. */
 
 		const char* signature;
@@ -81,9 +84,10 @@ typedef struct sTagEntryInfo {
 #ifdef HAVE_LIBXML
 		const char* xpath;
 #endif
+		unsigned long endLine;
 	} extensionFields;  /* list of extension fields*/
 
-#define PRE_ALLOCATED_PARSER_FIELDS 4
+#define PRE_ALLOCATED_PARSER_FIELDS 5
 #define NO_PARSER_FIELD -1
 	unsigned int usedParserFields;
 	tagField     parserFields [PRE_ALLOCATED_PARSER_FIELDS];
@@ -93,7 +97,7 @@ typedef struct sTagEntryInfo {
 	const char* sourceLanguage;
 	const char *sourceFileName;
 	unsigned long sourceLineNumberDifference;
-} tagEntryInfo;
+};
 
 
 /*
@@ -107,9 +111,9 @@ typedef struct sTagEntryInfo {
 extern void freeTagFileResources (void);
 extern const char *tagFileName (void);
 extern void openTagFile (void);
-extern void closeTagFile (const boolean resize);
-extern void beginEtagsFile (void);
-extern void endEtagsFile (const char *const name);
+extern void closeTagFile (const bool resize);
+extern void  setupWriter (void);
+extern void  teardownWriter (const char *inputFilename);
 extern int makeTagEntry (const tagEntryInfo *const tag);
 extern void initTagEntry (tagEntryInfo *const e, const char *const name,
 			  const kindOption *kind);
@@ -135,6 +139,8 @@ extern void invalidatePatternCache(void);
 extern void tagFilePosition (MIOPos *p);
 extern void setTagFilePosition (MIOPos *p);
 extern const char* getTagFileDirectory (void);
+extern void getTagScopeInformation (tagEntryInfo *const tag,
+				    const char **kind, const char **name);
 
 /* Getting line associated with tag */
 extern char *readLineFromBypassAnyway (vString *const vLine, const tagEntryInfo *const tag,
@@ -145,25 +151,24 @@ extern char* makePatternString (const tagEntryInfo *const tag);
 
 
 /* language is optional: can be NULL. */
-struct sPtagDesc;
-extern void writePseudoTag (const struct sPtagDesc *pdesc,
-			    const char *const fileName,
-			    const char *const pattern,
-			    const char *const parserName);
+extern bool writePseudoTag (const ptagDesc *pdesc,
+			       const char *const fileName,
+			       const char *const pattern,
+			       const char *const parserName);
 
+#define CORK_NIL 0
 void          corkTagFile(void);
 void          uncorkTagFile(void);
 tagEntryInfo *getEntryInCorkQueue   (unsigned int n);
+tagEntryInfo *getEntryOfNestingLevel (const NestingLevel *nl);
 size_t        countEntryInCorkQueue (void);
 
 extern void makeFileTag (const char *const fileName);
 
 extern void    markTagExtraBit     (tagEntryInfo *const tag, xtagType extra);
-extern boolean isTagExtraBitMarked (const tagEntryInfo *const tag, xtagType extra);
+extern bool isTagExtraBitMarked (const tagEntryInfo *const tag, xtagType extra);
 
 extern void attachParserField (tagEntryInfo *const tag, fieldType ftype, const char* value);
 extern void attachParserFieldToCorkEntry (int index, fieldType ftype, const char* value);
 
 #endif  /* CTAGS_MAIN_ENTRY_H */
-
-/* vi:set tabstop=4 shiftwidth=4: */

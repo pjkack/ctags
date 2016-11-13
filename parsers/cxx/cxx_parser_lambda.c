@@ -14,10 +14,11 @@
 #include "cxx_token.h"
 #include "cxx_token_chain.h"
 #include "cxx_scope.h"
+#include "cxx_tag.h"
 
 #include "parse.h"
 #include "vstring.h"
-#include "get.h"
+#include "lcpp.h"
 #include "debug.h"
 #include "keyword.h"
 #include "read.h"
@@ -36,6 +37,11 @@ CXXToken * cxxParserOpeningBracketIsLambda(void)
 	// [ capture-list ] ( params ) -> ret { body }	(2)
 	// [ capture-list ] ( params ) { body }	(3)
 	// [ capture-list ] { body }	(4)
+	
+	// Exclude the case of array bracket initialization
+	//  type var[] { ... } (5 - not lambda)
+
+	CXX_DEBUG_ASSERT(cxxParserCurrentLanguageIsCPP(),"C++ only");
 
 	CXXToken * t = g_cxx.pToken->pPrev;
 
@@ -44,9 +50,14 @@ CXXToken * cxxParserOpeningBracketIsLambda(void)
 
 	// Check simple cases first
 
-	// case 4
+	// case 4?
 	if(cxxTokenTypeIs(t,CXXTokenTypeSquareParenthesisChain))
 	{
+		if(t->pPrev && cxxTokenTypeIs(t->pPrev,CXXTokenTypeIdentifier))
+		{
+			// case 5
+			return NULL;
+		}
 		// very likely parameterless lambda
 		return t;
 	}
@@ -64,8 +75,17 @@ CXXToken * cxxParserOpeningBracketIsLambda(void)
 		return NULL;
 	}
 
-	t = cxxTokenChainPreviousTokenOfType(t,CXXTokenTypeSquareParenthesisChain);
+	// Stop also at commas, so in very large structures we will not be searching far
+	t = cxxTokenChainPreviousTokenOfType(
+			t,
+			CXXTokenTypeSquareParenthesisChain |
+			CXXTokenTypeComma
+		);
+
 	if(!t)
+		return NULL;
+
+	if(!cxxTokenTypeIs(t,CXXTokenTypeSquareParenthesisChain))
 		return NULL;
 
 	t = t->pNext;
@@ -77,9 +97,11 @@ CXXToken * cxxParserOpeningBracketIsLambda(void)
 }
 
 // In case of a lambda without parentheses this is the capture list token.
-boolean cxxParserHandleLambda(CXXToken * pParenthesis)
+bool cxxParserHandleLambda(CXXToken * pParenthesis)
 {
 	CXX_DEBUG_ENTER();
+
+	CXX_DEBUG_ASSERT(cxxParserCurrentLanguageIsCPP(),"C++ only");
 
 	CXXToken * pIdentifier = cxxTokenCreateAnonymousIdentifier(CXXTagKindFUNCTION);
 
@@ -92,7 +114,7 @@ boolean cxxParserHandleLambda(CXXToken * pParenthesis)
 	CXXToken * pAfterParenthesis = pParenthesis ? pParenthesis->pNext : NULL;
 
 	CXXToken * pCaptureList = NULL;
-	
+
 	if(pParenthesis)
 	{
 		if(cxxTokenTypeIs(pParenthesis,CXXTokenTypeSquareParenthesisChain))
@@ -142,20 +164,20 @@ boolean cxxParserHandleLambda(CXXToken * pParenthesis)
 			pTypeStart = pTypeStart->pNext;
 	}
 
-	int iCorkQueueIndex = SCOPE_NIL;
+	int iCorkQueueIndex = CORK_NIL;
 
 	if(tag)
 	{
-		tag->isFileScope = TRUE;
+		tag->isFileScope = true;
 
 		CXXToken * pTypeName;
 
 		if(pTypeStart)
-			pTypeName = cxxTagSetTypeField(pTypeStart,pTypeEnd);
+			pTypeName = cxxTagCheckAndSetTypeField(pTypeStart,pTypeEnd);
 		else
 			pTypeName = NULL;
 
-		if(pCaptureList && cxxTagCPPFieldEnabled(CXXTagCPPFieldLambdaCaptureList))
+		if(pCaptureList && cxxTagFieldEnabled(CXXTagCPPFieldLambdaCaptureList))
 		{
 			CXX_DEBUG_ASSERT(pCaptureList->pChain,"The capture list must be a chain");
 			cxxTokenChainCondense(pCaptureList->pChain,0);
@@ -163,7 +185,7 @@ boolean cxxParserHandleLambda(CXXToken * pParenthesis)
 					cxxTokenChainFirst(pCaptureList->pChain),
 					"Condensation should have created a single token in the chain"
 				);
-			cxxTagSetCPPField(
+			cxxTagSetField(
 					CXXTagCPPFieldLambdaCaptureList,
 					vStringValue(cxxTokenChainFirst(pCaptureList->pChain)->pszWord)
 				);
@@ -189,7 +211,7 @@ boolean cxxParserHandleLambda(CXXToken * pParenthesis)
 
 	cxxScopePush(
 			pIdentifier,
-			CXXTagKindFUNCTION,
+			CXXScopeTypeFunction,
 			CXXScopeAccessUnknown
 		);
 
@@ -206,9 +228,9 @@ boolean cxxParserHandleLambda(CXXToken * pParenthesis)
 			cxxParserEmitFunctionParameterTags(&oParamInfo);
 	}
 
-	boolean bRet = cxxParserParseBlock(TRUE);
+	bool bRet = cxxParserParseBlock(true);
 
-	if(iCorkQueueIndex > SCOPE_NIL)
+	if(iCorkQueueIndex > CORK_NIL)
 		cxxParserMarkEndLineForTagInCorkQueue(iCorkQueueIndex);
 
 	cxxScopePop();

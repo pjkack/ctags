@@ -23,6 +23,7 @@
 #define OPTION_WRITE
 #include "options.h"
 #include "parsers.h"
+#include "promise.h"
 #include "ptag.h"
 #include "read.h"
 #include "routines.h"
@@ -56,6 +57,10 @@ typedef struct {
  * FUNCTION PROTOTYPES
  */
 
+static void addParserPseudoTags (langType language);
+static void installKeywordTable (const langType language);
+static void installTagRegexTable (const langType language);
+static void installTagXpathTable (const langType language);
 
 /*
 *   DATA DEFINITIONS
@@ -65,11 +70,18 @@ static parserDefinitionFunc* BuiltInParsers[] = {
 	CTagsSelfTestParser,
 	PARSER_LIST,
 	XML_PARSER_LIST
+#ifdef HAVE_LIBXML
+	,
+#endif
+	YAML_PARSER_LIST
+#ifdef HAVE_LIBYAML
+	,
+#endif
 };
 static parserDefinition** LanguageTable = NULL;
 static unsigned int LanguageCount = 0;
 static kindOption defaultFileKind = {
-	.enabled     = FALSE,
+	.enabled     = false,
 	.letter      = KIND_FILE_DEFAULT,
 	.name        = KIND_FILE_DEFAULT_LONG,
 	.description = KIND_FILE_DEFAULT_LONG,
@@ -87,14 +99,14 @@ extern unsigned int countParsers (void)
 extern int makeSimpleTag (
 		const vString* const name, kindOption* const kinds, const int kind)
 {
-	int r = SCOPE_NIL;
+	int r = CORK_NIL;
 
 	if (kinds [kind].enabled  &&  name != NULL  &&  vStringLength (name) > 0)
 	{
-	    tagEntryInfo e;
-	    initTagEntry (&e, vStringValue (name), & kinds [kind]);
+		tagEntryInfo e;
+		initTagEntry (&e, vStringValue (name), & kinds [kind]);
 
-	    r = makeTagEntry (&e);
+		r = makeTagEntry (&e);
 	}
 	return r;
 }
@@ -102,7 +114,7 @@ extern int makeSimpleTag (
 extern int makeSimpleRefTag (const vString* const name, kindOption* const kinds, const int kind,
 			     int roleIndex)
 {
-	int r = SCOPE_NIL;
+	int r = CORK_NIL;
 
 	if (! isXtagEnabled (XTAG_REFERENCE_TAGS))
 		return r;
@@ -119,12 +131,12 @@ extern int makeSimpleRefTag (const vString* const name, kindOption* const kinds,
 	return r;
 }
 
-extern boolean isLanguageEnabled (const langType language)
+extern bool isLanguageEnabled (const langType language)
 {
 	const parserDefinition* const lang = LanguageTable [language];
 
 	if (!lang->enabled)
-		return FALSE;
+		return false;
 
 	if (lang->method & METHOD_XCMD)
 		initializeParser (language);
@@ -133,10 +145,10 @@ extern boolean isLanguageEnabled (const langType language)
 		 (!(lang->method & METHOD_XCMD_AVAILABLE)) &&
 		 (lang->kinds == NULL) &&
 		 (!(lang->method & METHOD_REGEX)) &&
-	         (!(lang->method & METHOD_XPATH)))
-		return FALSE;
+		 (!(lang->method & METHOD_XPATH)))
+		return false;
 	else
-		return TRUE;
+		return true;
 }
 
 /*
@@ -167,14 +179,20 @@ extern parserDefinition* parserNewFull (const char* name, char fileKind)
 		result->fileKind = fileKindNew(fileKind);
 	else
 		result->fileKind = &defaultFileKind;
-	result->enabled = TRUE;
+	result->enabled = true;
 	return result;
 }
 
-extern boolean doesLanguageAllowNullTag (const langType language)
+extern bool doesLanguageAllowNullTag (const langType language)
 {
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	return LanguageTable [language]->allowNullTag;
+}
+
+extern bool doesLanguageRequestAutomaticFQTag (const langType language)
+{
+	Assert (0 <= language  &&  language < (int) LanguageCount);
+	return LanguageTable [language]->requestAutomaticFQTag;
 }
 
 extern const char *getLanguageName (const langType language)
@@ -248,7 +266,7 @@ static langType getNameOrAliasesLanguageAndSpec (const char *const key, langType
 	for (i = start_index  ;  i < LanguageCount  &&  result == LANG_IGNORE  ;  ++i)
 	{
 		const parserDefinition* const lang = LanguageTable [i];
-		stringList* const aliases = lang->currentAliaes;
+		stringList* const aliases = lang->currentAliases;
 		vString* tmp;
 
 		/* isLanguageEnabled is not used here.
@@ -329,7 +347,7 @@ found:
 	return result;
 }
 
-static parserCandidate* parserCandidateNew(unsigned int count __unused__)
+static parserCandidate* parserCandidateNew(unsigned int count CTAGS_ATTR_UNUSED)
 {
 	parserCandidate* candidates;
 	unsigned int i;
@@ -407,7 +425,6 @@ static vString* determineInterpreter (const char* const cmd)
 			;  /* no-op */
 		for ( ;  *p != '\0'  &&  ! isspace ((int) *p)  ;  ++p)
 			vStringPut (interpreter, (int) *p);
-		vStringTerminate (interpreter);
 	} while (strcmp (vStringValue (interpreter), "env") == 0);
 	return interpreter;
 }
@@ -462,7 +479,6 @@ static vString* determineEmacsModeAtFirstLine (const char* const line)
 			;  /* no-op */
 		for ( ;  *p != '\0'  &&  (isalnum ((int) *p)  || *p == '-')  ;  ++p)
 			vStringPut (mode, (int) *p);
-		vStringTerminate (mode);
 	}
 	else
 	{
@@ -474,7 +490,6 @@ static vString* determineEmacsModeAtFirstLine (const char* const line)
 
 		for ( ;  p < end &&  (isalnum ((int) *p) || *p == '-')  ;  ++p)
 			vStringPut (mode, (int) *p);
-		vStringTerminate (mode);
 
 		for ( ;  isspace ((int) *p)  ;  ++p)
 			;  /* no-op */
@@ -510,7 +525,7 @@ static vString* determineEmacsModeAtEOF (MIO* const fp)
 {
 	vString* const vLine = vStringNew ();
 	const char* line;
-	boolean headerFound = FALSE;
+	bool headerFound = false;
 	const char* p;
 	vString* mode = vStringNew ();
 
@@ -519,19 +534,18 @@ static vString* determineEmacsModeAtEOF (MIO* const fp)
 		if (headerFound && ((p = strstr (line, "mode:")) != NULL))
 		{
 			vStringClear (mode);
-			headerFound = FALSE;
+			headerFound = false;
 
 			p += strlen ("mode:");
 			for ( ;  isspace ((int) *p)  ;  ++p)
 				;  /* no-op */
 			for ( ;  *p != '\0'  &&  (isalnum ((int) *p)  || *p == '-')  ;  ++p)
 				vStringPut (mode, (int) *p);
-			vStringTerminate (mode);
 		}
 		else if (headerFound && (p = strstr(line, "End:")))
-			headerFound = FALSE;
+			headerFound = false;
 		else if (strstr (line, "Local Variables:"))
-			headerFound = TRUE;
+			headerFound = true;
 	}
 	vStringDelete (vLine);
 	return mode;
@@ -580,7 +594,6 @@ static vString* determineVimFileType (const char *const modeline)
 		p += strlen(filetype_prefix[i]);
 		for ( ;  *p != '\0'  &&  isalnum ((int) *p)  ;  ++p)
 			vStringPut (filetype, (int) *p);
-		vStringTerminate (filetype);
 		break;
 	}
 	return filetype;
@@ -682,14 +695,14 @@ static vString* extractZshAutoloadTag(MIO* input)
 struct getLangCtx {
     const char *fileName;
     MIO        *input;
-    boolean     err;
+    bool     err;
 };
 
 #define GLC_FOPEN_IF_NECESSARY0(_glc_, _label_) do {        \
     if (!(_glc_)->input) {                                  \
-        (_glc_)->input = mio_new_file((_glc_)->fileName, "rb"); \
+	    (_glc_)->input = getMio((_glc_)->fileName, "rb", false);	\
         if (!(_glc_)->input) {                              \
-            (_glc_)->err = TRUE;                            \
+            (_glc_)->err = true;                            \
             goto _label_;                                   \
         }                                                   \
     }                                                       \
@@ -697,17 +710,16 @@ struct getLangCtx {
 
 #define GLC_FOPEN_IF_NECESSARY(_glc_, _label_, _doesParserRequireMemoryStream_) \
 	do {								\
-		size_t size;						\
 		if (!(_glc_)->input)					\
 			GLC_FOPEN_IF_NECESSARY0 (_glc_, _label_);	\
 		if ((_doesParserRequireMemoryStream_) &&		\
-		    (mio_memory_get_data((_glc_)->input, &size) == NULL)) \
+		    (mio_memory_get_data((_glc_)->input, NULL) == NULL)) \
 		{							\
 			MIO *tmp_ = (_glc_)->input;			\
 			(_glc_)->input = mio_new_mio (tmp_, 0, 0);	\
 			mio_free (tmp_);				\
 			if (!(_glc_)->input) {				\
-				(_glc_)->err = TRUE;			\
+				(_glc_)->err = true;			\
 				goto _label_;				\
 			}						\
 		}							\
@@ -751,22 +763,22 @@ static langType tasteLanguage (struct getLangCtx *glc, const struct taster *cons
 /* If all the candidates have the same specialized language selector, return
  * it.  Otherwise, return NULL.
  */
-static boolean
+static bool
 hasTheSameSelector (langType lang, selectLanguage candidate_selector)
 {
 	selectLanguage *selector;
 
 	selector = LanguageTable[ lang ]->selectLanguage;
 	if (selector == NULL)
-		return FALSE;
+		return false;
 
 	while (*selector)
 	{
 		if (*selector == candidate_selector)
-			return TRUE;
+			return true;
 		selector++;
 	}
-	return FALSE;
+	return false;
 }
 
 static selectLanguage
@@ -874,16 +886,16 @@ static void verboseReportCandidate (const char *header,
 			 candidates[i].spec);
 }
 
-static boolean doesCandidatesRequireMemoryStream(const parserCandidate *candidates,
+static bool doesCandidatesRequireMemoryStream(const parserCandidate *candidates,
 						 int n_candidates)
 {
 	int i;
 
 	for (i = 0; i < n_candidates; i++)
 		if (doesParserRequireMemoryStream (candidates[i].lang))
-			return TRUE;
+			return true;
 
-	return FALSE;
+	return false;
 }
 
 static langType getSpecLanguageCommon (const char *const spec, struct getLangCtx *glc,
@@ -912,7 +924,7 @@ static langType getSpecLanguageCommon (const char *const spec, struct getLangCtx
 	else if (n_candidates > 1)
 	{
 		selectLanguage selector = commonSelector(candidates, n_candidates);
-		boolean memStreamRequired = doesCandidatesRequireMemoryStream (candidates,
+		bool memStreamRequired = doesCandidatesRequireMemoryStream (candidates,
 									       n_candidates);
 
 		GLC_FOPEN_IF_NECESSARY(glc, fopen_error, memStreamRequired);
@@ -990,7 +1002,7 @@ tasteLanguage (struct getLangCtx *glc, const struct taster *const tasters, int n
 }
 
 static langType
-getFileLanguageInternal (const char *const fileName)
+getFileLanguageInternal (const char *const fileName, MIO **mio)
 {
     langType language;
 
@@ -1026,7 +1038,7 @@ getFileLanguageInternal (const char *const fileName)
     struct getLangCtx glc = {
         .fileName = fileName,
         .input    = NULL,
-        .err      = FALSE,
+        .err      = false,
     };
     const char* const baseName = baseFilename (fileName);
     char *templateBaseName = NULL;
@@ -1049,7 +1061,7 @@ getFileLanguageInternal (const char *const fileName)
         if (templateBaseName)
         {
             verbose ("	pattern + template(%s): %s\n", tExt, templateBaseName);
-            GLC_FOPEN_IF_NECESSARY(&glc, cleanup, FALSE);
+            GLC_FOPEN_IF_NECESSARY(&glc, cleanup, false);
             mio_rewind(glc.input);
             language = getPatternLanguage(templateBaseName, &glc,
 					  fallback + HINT_TEMPLATE);
@@ -1063,7 +1075,7 @@ getFileLanguageInternal (const char *const fileName)
     {
 	    if (fstatus->isExecutable || Option.guessLanguageEagerly)
 	    {
-		    GLC_FOPEN_IF_NECESSARY (&glc, cleanup, FALSE);
+		    GLC_FOPEN_IF_NECESSARY (&glc, cleanup, false);
 		    language = tasteLanguage(&glc, eager_tasters, 1,
 					    fallback + HINT_INTERP);
 	    }
@@ -1072,8 +1084,8 @@ getFileLanguageInternal (const char *const fileName)
 
 	    if (Option.guessLanguageEagerly)
 	    {
-		    GLC_FOPEN_IF_NECESSARY(&glc, cleanup, FALSE);
-		    language = tasteLanguage(&glc, 
+		    GLC_FOPEN_IF_NECESSARY(&glc, cleanup, false);
+		    language = tasteLanguage(&glc,
 					     eager_tasters + 1,
 					     ARRAY_SIZE(eager_tasters) - 1,
 					     fallback + HINT_OTHER);
@@ -1082,6 +1094,8 @@ getFileLanguageInternal (const char *const fileName)
 
 
   cleanup:
+    if (mio && glc.input)
+	    *mio = mio_ref (glc.input);
     GLC_FCLOSE(&glc);
     if (fstatus)
 	    eStatFree (fstatus);
@@ -1100,12 +1114,15 @@ getFileLanguageInternal (const char *const fileName)
     return language;
 }
 
-extern langType getFileLanguage (const char *const fileName)
+static langType getFileLanguageAndKeepMIO (const char *const fileName, MIO **mio)
 {
 	langType l = Option.language;
 
+	if (mio)
+		*mio = NULL;
+
 	if (l == LANG_AUTO)
-		return getFileLanguageInternal(fileName);
+		return getFileLanguageInternal(fileName, mio);
 	else if (! isLanguageEnabled (l))
 	{
 		error (FATAL,
@@ -1116,6 +1133,11 @@ extern langType getFileLanguage (const char *const fileName)
 	}
 	else
 		return Option.language;
+}
+
+extern langType getFileLanguage (const char *const fileName)
+{
+	return getFileLanguageAndKeepMIO(fileName, NULL);
 }
 
 typedef void (*languageCallback)  (langType language, void* user_data);
@@ -1134,7 +1156,7 @@ static void foreachLanguage(languageCallback callback, void *user_data)
 
 extern void printLanguageMap (const langType language, FILE *fp)
 {
-	boolean first = TRUE;
+	bool first = true;
 	unsigned int i;
 	stringList* map = LanguageTable [language]->currentPatterns;
 	Assert (0 <= language  &&  language < (int) LanguageCount);
@@ -1142,14 +1164,14 @@ extern void printLanguageMap (const langType language, FILE *fp)
 	{
 		fprintf (fp, "%s(%s)", (first ? "" : " "),
 			 vStringValue (stringListItem (map, i)));
-		first = FALSE;
+		first = false;
 	}
 	map = LanguageTable [language]->currentExtensions;
 	for (i = 0  ;  map != NULL  &&  i < stringListCount (map)  ;  ++i)
 	{
 		fprintf (fp, "%s.%s", (first ? "" : " "),
 			 vStringValue (stringListItem (map, i)));
-		first = FALSE;
+		first = false;
 	}
 }
 
@@ -1201,14 +1223,14 @@ extern void installLanguageAliasesDefault (const langType language)
 	parserDefinition* lang;
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	lang = LanguageTable [language];
-	if (lang->currentAliaes != NULL)
-		stringListDelete (lang->currentAliaes);
+	if (lang->currentAliases != NULL)
+		stringListDelete (lang->currentAliases);
 
 	if (lang->aliases == NULL)
-		lang->currentAliaes = stringListNew ();
+		lang->currentAliases = stringListNew ();
 	else
 	{
-		lang->currentAliaes =
+		lang->currentAliases =
 			stringListNewFromArgv (lang->aliases);
 	}
 	BEGIN_VERBOSE(vfp);
@@ -1236,25 +1258,25 @@ extern void clearLanguageMap (const langType language)
 extern void clearLanguageAliases (const langType language)
 {
 	Assert (0 <= language  &&  language < (int) LanguageCount);
-	stringListClear (LanguageTable [language]->currentAliaes);
+	stringListClear (LanguageTable [language]->currentAliases);
 }
 
-static boolean removeLanguagePatternMap1(const langType language, const char *const pattern)
+static bool removeLanguagePatternMap1(const langType language, const char *const pattern)
 {
-	boolean result = FALSE;
+	bool result = false;
 	stringList* const ptrn = LanguageTable [language]->currentPatterns;
 
 	if (ptrn != NULL && stringListDeleteItemExtension (ptrn, pattern))
 	{
 		verbose (" (removed from %s)", getLanguageName (language));
-		result = TRUE;
+		result = true;
 	}
 	return result;
 }
 
-extern boolean removeLanguagePatternMap (const langType language, const char *const pattern)
+extern bool removeLanguagePatternMap (const langType language, const char *const pattern)
 {
-	boolean result = FALSE;
+	bool result = false;
 
 	if (language == LANG_AUTO)
 	{
@@ -1268,7 +1290,7 @@ extern boolean removeLanguagePatternMap (const langType language, const char *co
 }
 
 extern void addLanguagePatternMap (const langType language, const char* ptrn,
-				   boolean exclusiveInAllLanguages)
+				   bool exclusiveInAllLanguages)
 {
 	vString* const str = vStringNewInit (ptrn);
 	parserDefinition* lang;
@@ -1279,22 +1301,22 @@ extern void addLanguagePatternMap (const langType language, const char* ptrn,
 	stringListAdd (lang->currentPatterns, str);
 }
 
-static boolean removeLanguageExtensionMap1 (const langType language, const char *const extension)
+static bool removeLanguageExtensionMap1 (const langType language, const char *const extension)
 {
-	boolean result = FALSE;
+	bool result = false;
 	stringList* const exts = LanguageTable [language]->currentExtensions;
 
 	if (exts != NULL  &&  stringListDeleteItemExtension (exts, extension))
 	{
 		verbose (" (removed from %s)", getLanguageName (language));
-		result = TRUE;
+		result = true;
 	}
 	return result;
 }
 
-extern boolean removeLanguageExtensionMap (const langType language, const char *const extension)
+extern bool removeLanguageExtensionMap (const langType language, const char *const extension)
 {
-	boolean result = FALSE;
+	bool result = false;
 
 	if (language == LANG_AUTO)
 	{
@@ -1309,7 +1331,7 @@ extern boolean removeLanguageExtensionMap (const langType language, const char *
 
 extern void addLanguageExtensionMap (
 		const langType language, const char* extension,
-		boolean exclusiveInAllLanguages)
+		bool exclusiveInAllLanguages)
 {
 	vString* const str = vStringNewInit (extension);
 	Assert (0 <= language  &&  language < (int) LanguageCount);
@@ -1324,18 +1346,18 @@ extern void addLanguageAlias (const langType language, const char* alias)
 	parserDefinition* lang;
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	lang = LanguageTable [language];
-	if (lang->currentAliaes == NULL)
-		lang->currentAliaes = stringListNew ();
-	stringListAdd (lang->currentAliaes, str);
+	if (lang->currentAliases == NULL)
+		lang->currentAliases = stringListNew ();
+	stringListAdd (lang->currentAliases, str);
 }
 
-extern void enableLanguage (const langType language, const boolean state)
+extern void enableLanguage (const langType language, const bool state)
 {
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	LanguageTable [language]->enabled = state;
 }
 
-extern void enableLanguages (const boolean state)
+extern void enableLanguages (const bool state)
 {
 	unsigned int i;
 	for (i = 0  ;  i < LanguageCount  ;  ++i)
@@ -1343,20 +1365,20 @@ extern void enableLanguages (const boolean state)
 }
 
 #ifdef DEBUG
-static boolean doesParserUseKind (const parserDefinition *const parser, char letter)
+static bool doesParserUseKind (const parserDefinition *const parser, char letter)
 {
 	unsigned int k;
 
 	for (k = 0; k < parser->kindCount; k++)
 		if (parser->kinds [k].letter == letter)
-			return TRUE;
-	return FALSE;
+			return true;
+	return false;
 }
 #endif
 
 static void installFieldSpec (const langType language)
 {
-	int i;
+	unsigned int i;
 	parserDefinition * parser;
 
 	Assert (0 <= language  &&  language < (int) LanguageCount);
@@ -1365,36 +1387,69 @@ static void installFieldSpec (const langType language)
 		error (FATAL,
 		       "INTERNAL ERROR: in a parser, fields are defined more than PRE_ALLOCATED_PARSER_FIELDS\n");
 
-	if ((parser->fieldSpecs != NULL) && (parser->fieldSpecInstalled == FALSE))
+	if (parser->fieldSpecs != NULL)
 	{
 		for (i = 0; i < parser->fieldSpecCount; i++)
 			defineField (& parser->fieldSpecs [i], language);
-		parser->fieldSpecInstalled = TRUE;
 	}
 }
 
-extern void initializeParser (langType lang)
+static void initializeParserOne (langType lang)
 {
 	parserDefinition *const parser = LanguageTable [lang];
+
+	if (parser->initialized)
+		return;
+
+	verbose ("Initialize parser: %s\n", parser->name);
+	parser->initialized = true;
 
 	installKeywordTable (lang);
 	installTagRegexTable (lang);
 	installTagXpathTable (lang);
 	installFieldSpec     (lang);
 
-	if (hasScopeActionInRegex (lang))
-		parser->useCork = TRUE;
+	if (hasScopeActionInRegex (lang)
+	    || parser->requestAutomaticFQTag)
+		parser->useCork = true;
 
-	if ((parser->initialize != NULL) && (parser->initialized == FALSE))
-	{
+	if (parser->initialize != NULL)
 		parser->initialize (lang);
-		parser->initialized = TRUE;
-	}
+
+	initializeSubparsers (parser);
 
 	Assert (parser->fileKind != KIND_NULL);
 	Assert (!doesParserUseKind (parser, parser->fileKind->letter));
 }
 
+extern void initializeParser (langType lang)
+{
+	if (lang == LANG_AUTO)
+	{
+		int i;
+		for (i = 0; i < countParsers(); i++)
+			initializeParserOne (i);
+	}
+	else
+		initializeParserOne (lang);
+}
+
+static void linkDependenciesAtInitializeParsing (parserDefinition *const parser)
+{
+	unsigned int i;
+	parserDependency *d;
+	langType upper;
+	parserDefinition *upperParserDef;
+
+	for (i = 0; i < parser->dependencyCount; i++)
+	{
+		d = parser->dependencies + i;
+		upper = getNamedLanguage (d->upperParser, 0);
+		upperParserDef = LanguageTable [upper];
+
+		linkDependencyAtInitializeParsing (d->type, upperParserDef, parser);
+	}
+}
 
 extern void initializeParsing (void)
 {
@@ -1410,20 +1465,20 @@ extern void initializeParsing (void)
 		parserDefinition* const def = (*BuiltInParsers [i]) ();
 		if (def != NULL)
 		{
-			boolean accepted = FALSE;
+			bool accepted = false;
 			if (def->name == NULL  ||  def->name[0] == '\0')
 				error (FATAL, "parser definition must contain name\n");
 			else if (def->method & METHOD_NOT_CRAFTED)
 			{
 				def->parser = findRegexTags;
-				accepted = TRUE;
+				accepted = true;
 			}
-			else if (((!!def->parser) + (!!def->parser2)) != 1)
+			else if ((!def->invisible) && (((!!def->parser) + (!!def->parser2)) != 1))
 				error (FATAL,
 		"%s parser definition must define one and only one parsing routine\n",
 					   def->name);
 			else
-				accepted = TRUE;
+				accepted = true;
 			if (accepted)
 			{
 				verbose ("%s%s", i > 0 ? ", " : "", def->name);
@@ -1433,6 +1488,9 @@ extern void initializeParsing (void)
 		}
 	}
 	verbose ("\n");
+
+	for (i = 0; i < builtInCount  ;  ++i)
+		linkDependenciesAtInitializeParsing (LanguageTable [i]);
 }
 
 extern void freeParserResources (void)
@@ -1443,7 +1501,10 @@ extern void freeParserResources (void)
 		parserDefinition* const lang = LanguageTable [i];
 
 		if (lang->finalize)
-			(lang->finalize)((langType)i, (boolean)lang->initialized);
+			(lang->finalize)((langType)i, (bool)lang->initialized);
+
+		finalizeSubparsers (lang);
+
 		if (lang->fileKind != &defaultFileKind)
 		{
 			eFree (lang->fileKind);
@@ -1452,7 +1513,7 @@ extern void freeParserResources (void)
 
 		freeList (&lang->currentPatterns);
 		freeList (&lang->currentExtensions);
-		freeList (&lang->currentAliaes);
+		freeList (&lang->currentAliases);
 
 		eFree (lang->name);
 		lang->name = NULL;
@@ -1509,7 +1570,7 @@ static flagDefinition LangDefFlagDef [] = {
 };
 
 extern void processLanguageDefineOption (
-		const char *const option, const char *const parameter __unused__)
+		const char *const option, const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	if (parameter [0] == '\0')
 		error (WARNING, "No language specified for \"%s\" option", option);
@@ -1557,7 +1618,20 @@ static kindOption *langKindOption (const langType language, const int flag)
 	return result;
 }
 
-extern boolean isLanguageKindEnabled (const langType language, char kind)
+static kindOption *langKindLongOption (const langType language, const char *kindLong)
+{
+	unsigned int i;
+	kindOption* result = NULL;
+	const parserDefinition* lang;
+	Assert (0 <= language  &&  language < (int) LanguageCount);
+	lang = LanguageTable [language];
+	for (i=0  ;  i < lang->kindCount  &&  result == NULL  ;  ++i)
+		if (strcmp (lang->kinds [i].name, kindLong) == 0)
+			result = &lang->kinds [i];
+	return result;
+}
+
+extern bool isLanguageKindEnabled (const langType language, char kind)
 {
 	const kindOption *kindOpt;
 
@@ -1573,7 +1647,7 @@ extern boolean isLanguageKindEnabled (const langType language, char kind)
 }
 
 
-static void resetLanguageKinds (const langType language, const boolean mode)
+static void resetLanguageKinds (const langType language, const bool mode)
 {
 	const parserDefinition* lang;
 	Assert (0 <= language  &&  language < (int) LanguageCount);
@@ -1584,22 +1658,37 @@ static void resetLanguageKinds (const langType language, const boolean mode)
 	{
 		unsigned int i;
 		for (i = 0  ;  i < lang->kindCount  ;  ++i)
-			lang->kinds [i].enabled = mode;
+			enableKind (lang->kinds + i, mode);
 	}
 }
 
-static boolean enableLanguageKind (
-		const langType language, const int kind, const boolean mode)
+static bool enableLanguageKind (
+		const langType language, const int kind, const bool mode)
 {
-	boolean result = FALSE;
+	bool result = false;
 	kindOption* const opt = langKindOption (language, kind);
 	if (opt != NULL)
 	{
-		opt->enabled = mode;
-		result = TRUE;
+		enableKind (opt, mode);
+		result = true;
 	}
-	result = enableRegexKind (language, kind, mode)? TRUE: result;
-	result = enableXcmdKind (language, kind, mode)? TRUE: result;
+	result = enableRegexKind (language, kind, mode)? true: result;
+	result = enableXcmdKind (language, kind, mode)? true: result;
+	return result;
+}
+
+static bool enableLanguageKindLong (
+	const langType language, const char * const kindLong, const bool mode)
+{
+	bool result = false;
+	kindOption* const opt = langKindLongOption (language, kindLong);
+	if (opt != NULL)
+	{
+		enableKind (opt, mode);
+		result = true;
+	}
+	result = enableRegexKindLong (language, kindLong, mode)? true: result;
+	result = enableXcmdKindLong (language, kindLong, mode)? true: result;
 	return result;
 }
 
@@ -1608,29 +1697,75 @@ static void processLangKindOption (
 		const char *const parameter)
 {
 	const char *p = parameter;
-	boolean mode = TRUE;
+	bool mode = true;
 	int c;
+	static vString *longName;
+	bool inLongName = false;
+	const char *k;
+	bool r;
 
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 
 	initializeParser (language);
 	if (*p == '*')
 	{
-		resetLanguageKinds (language, TRUE);
+		resetLanguageKinds (language, true);
 		p++;
 	}
 	else if (*p != '+'  &&  *p != '-')
-		resetLanguageKinds (language, FALSE);
+		resetLanguageKinds (language, false);
 
-	while ((c = *p++) != '\0') switch (c)
+	longName = vStringNewOrClear (longName);
+
+	while ((c = *p++) != '\0')
 	{
-		case '+': mode = TRUE;  break;
-		case '-': mode = FALSE; break;
-		default:
-			if (! enableLanguageKind (language, c, mode))
-				error (WARNING, "Unsupported kind: '%c' for --%s option",
-					c, option);
+		switch (c)
+		{
+		case '+':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = true;
 			break;
+		case '-':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = false;
+			break;
+		case '{':
+			if (inLongName)
+				error(FATAL,
+				      "unexpected character in kind specification: \'%c\'",
+				      c);
+			inLongName = true;
+			break;
+		case '}':
+			if (!inLongName)
+				error(FATAL,
+				      "unexpected character in kind specification: \'%c\'",
+				      c);
+			k = vStringValue (longName);
+			r = enableLanguageKindLong (language, k, mode);
+			if (! r)
+				error (WARNING, "Unsupported kind: '%s' for --%s option",
+				       k, option);
+
+			inLongName = false;
+			vStringClear (longName);
+			break;
+		default:
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+			{
+				r = enableLanguageKind (language, c, mode);
+				if (! r)
+					error (WARNING, "Unsupported kind: '%c' for --%s option",
+					       c, option);
+			}
+			break;
+		}
 	}
 }
 
@@ -1645,13 +1780,13 @@ static void processLangKindOptionEach(
 	processLangKindOption (lang, arg->option, arg->parameter);
 }
 
-extern boolean processKindOption (
+extern bool processKindOption (
 		const char *const option, const char *const parameter)
 {
 #define PREFIX "kinds-"
 #define PREFIX_LEN strlen(PREFIX)
 
-	boolean handled = FALSE;
+	bool handled = false;
 	struct langKindOptionStruct arg = {
 		.option = option,
 		.parameter = parameter,
@@ -1677,7 +1812,7 @@ extern boolean processKindOption (
 				processLangKindOption (language, option, parameter);
 			vStringDelete (langName);
 		}
-		handled = TRUE;
+		handled = true;
 	}
 	else if ( strncmp (option, PREFIX, PREFIX_LEN) == 0 )
 	{
@@ -1691,7 +1826,7 @@ extern boolean processKindOption (
 		else if (len == 1 && lang[0] == '*')
 		{
 			foreachLanguage(processLangKindOptionEach, &arg);
-			handled = TRUE;
+			handled = true;
 		}
 		else
 		{
@@ -1701,7 +1836,7 @@ extern boolean processKindOption (
 			else
 			{
 				processLangKindOption (language, option, parameter);
-				handled = TRUE;
+				handled = true;
 			}
 		}
 
@@ -1711,10 +1846,13 @@ extern boolean processKindOption (
 #undef PREFIX_LEN
 }
 
-static void printRoles (const langType language, const char* letters, boolean allowMissingKind)
+static void printRoles (const langType language, const char* letters, bool allowMissingKind)
 {
 	const parserDefinition* const lang = LanguageTable [language];
 	const char *c;
+
+	if (lang->invisible)
+		return;
 
 	for (c = letters; *c != '\0'; c++)
 	{
@@ -1750,10 +1888,10 @@ extern void printLanguageRoles (const langType language, const char* letters)
 	{
 		unsigned int i;
 		for (i = 0  ;  i < LanguageCount  ;  ++i)
-			printRoles (i, letters, TRUE);
+			printRoles (i, letters, true);
 	}
 	else
-		printRoles (language, letters, FALSE);
+		printRoles (language, letters, false);
 
 }
 
@@ -1772,7 +1910,7 @@ extern void printLanguageFileKind (const langType language)
 		printf ("%c\n", LanguageTable [language]->fileKind->letter);
 }
 
-static void printKinds (langType language, boolean allKindFields, boolean indent)
+static void printKinds (langType language, bool allKindFields, bool indent)
 {
 	const parserDefinition* lang;
 	Assert (0 <= language  &&  language < (int) LanguageCount);
@@ -1793,14 +1931,14 @@ static void printKinds (langType language, boolean allKindFields, boolean indent
 	printXcmdKinds (language, allKindFields, indent, Option.machinable);
 }
 
-extern void printLanguageKinds (const langType language, boolean allKindFields)
+extern void printLanguageKinds (const langType language, bool allKindFields)
 {
 	if (language == LANG_AUTO)
 	{
 		unsigned int i;
 
 		if (Option.withListHeader && allKindFields)
-			printKindListHeader (TRUE, Option.machinable);
+			printKindListHeader (true, Option.machinable);
 
 		for (i = 0  ;  i < LanguageCount  ;  ++i)
 		{
@@ -1811,15 +1949,15 @@ extern void printLanguageKinds (const langType language, boolean allKindFields)
 
 			if (!allKindFields)
 				printf ("%s%s\n", lang->name, isLanguageEnabled (i) ? "" : " [disabled]");
-			printKinds (i, allKindFields, TRUE);
+			printKinds (i, allKindFields, true);
 		}
 	}
 	else
 	{
 		if (Option.withListHeader && allKindFields)
-			printKindListHeader (FALSE, Option.machinable);
+			printKindListHeader (false, Option.machinable);
 
-		printKinds (language, allKindFields, FALSE);
+		printKinds (language, allKindFields, false);
 	}
 }
 
@@ -1842,10 +1980,10 @@ static void processLangAliasOption (const langType language,
 	}
 	else if (parameter[0] == '-')
 	{
-		if (lang->currentAliaes)
+		if (lang->currentAliases)
 		{
 			alias = parameter + 1;
-			if (stringListDeleteItemExtension (lang->currentAliaes, alias))
+			if (stringListDeleteItemExtension (lang->currentAliases, alias))
 			{
 				verbose ("remove alias %s from %s\n", alias, lang->name);
 			}
@@ -1861,17 +1999,17 @@ static void processLangAliasOption (const langType language,
 
 }
 
-extern boolean processAliasOption (
+extern bool processAliasOption (
 		const char *const option, const char *const parameter)
 {
 	langType language;
 
 	language = getLanguageComponentInOption (option, "alias-");
 	if (language == LANG_IGNORE)
-		return FALSE;
+		return false;
 
 	processLangAliasOption (language, parameter);
-	return TRUE;
+	return true;
 }
 
 static void printMaps (const langType language, langmapType type)
@@ -1899,10 +2037,10 @@ static void printAliases (const langType language, FILE *fp)
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	lang = LanguageTable [language];
 
-	if (lang->currentAliaes != NULL)
-		for (i = 0  ;  i < stringListCount (lang->currentAliaes)  ;  ++i)
+	if (lang->currentAliases != NULL)
+		for (i = 0  ;  i < stringListCount (lang->currentAliases)  ;  ++i)
 			fprintf (fp, " %s", vStringValue (
-					stringListItem (lang->currentAliaes, i)));
+					stringListItem (lang->currentAliases, i)));
 }
 
 extern void printLanguageMaps (const langType language, langmapType type)
@@ -1972,75 +2110,129 @@ extern void printLanguageList (void)
 *   File parsing
 */
 
-static rescanReason createTagsForFile (
-		const char *const fileName, const langType language,
-		const unsigned int passCount)
+static rescanReason createTagsForFile (const langType language,
+				       const unsigned int passCount)
 {
+	parserDefinition *const lang = LanguageTable [language];
 	rescanReason rescan = RESCAN_NONE;
-	Assert (0 <= language  &&  language < (int) LanguageCount);
-	if (openInputFile (fileName, language))
-	{
-		parserDefinition *const lang = LanguageTable [language];
 
-		Assert (lang->parser || lang->parser2);
+	resetInputFile (language);
 
-		if (LanguageTable [language]->useCork)
-			corkTagFile();
+	Assert (lang->parser || lang->parser2);
 
-		if (lang->parser != NULL)
-			lang->parser ();
-		else if (lang->parser2 != NULL)
-			rescan = lang->parser2 (passCount);
-
-		makeFileTag (fileName);
-
-		if (LanguageTable [language]->useCork)
-			uncorkTagFile();
-
-		closeInputFile ();
-	}
+	if (lang->parser != NULL)
+		lang->parser ();
+	else if (lang->parser2 != NULL)
+		rescan = lang->parser2 (passCount);
 
 	return rescan;
 }
 
-static boolean createTagsWithFallback (
-		const char *const fileName, const langType language)
+static bool createTagsWithFallback1 (const langType language)
 {
+	bool tagFileResized = false;
 	unsigned long numTags	= numTagsAdded ();
 	MIOPos tagfpos;
+	int lastPromise = getLastPromise ();
 	unsigned int passCount = 0;
-	boolean tagFileResized = FALSE;
 	rescanReason whyRescan;
 
+	initializeParser (language);
+	if (LanguageTable [language]->useCork)
+		corkTagFile();
+
+	addParserPseudoTags (language);
 	tagFilePosition (&tagfpos);
+
 	while ( ( whyRescan =
-	            createTagsForFile (fileName, language, ++passCount) )
-	                != RESCAN_NONE)
+		  createTagsForFile (language, ++passCount) )
+		!= RESCAN_NONE)
 	{
+		if (LanguageTable [language]->useCork)
+		{
+			uncorkTagFile();
+			corkTagFile();
+		}
+
+
 		if (whyRescan == RESCAN_FAILED)
 		{
 			/*  Restore prior state of tag file.
 			*/
 			setTagFilePosition (&tagfpos);
 			setNumTagsAdded (numTags);
-			tagFileResized = TRUE;
+			tagFileResized = true;
+			breakPromisesAfter(lastPromise);
 		}
 		else if (whyRescan == RESCAN_APPEND)
 		{
 			tagFilePosition (&tagfpos);
 			numTags = numTagsAdded ();
+			lastPromise = getLastPromise ();
 		}
 	}
+
+	if (LanguageTable [language]->useCork)
+		uncorkTagFile();
+
+	return tagFileResized;
+}
+
+extern bool runParserInNarrowedInputStream (const langType language,
+					       unsigned long startLine, int startCharOffset,
+					       unsigned long endLine, int endCharOffset,
+					       unsigned long sourceLineOffset)
+{
+	bool tagFileResized;
+
+	verbose ("runParserInNarrowedInputStream: %s; "
+			 "file: %s, "
+			 "start(line: %lu, offset: %u, srcline: %lu)"
+			 " - "
+			 "end(line: %lu, offset: %u)\n",
+			 getLanguageName (language),
+			 getInputFileName (),
+			 startLine, startCharOffset, sourceLineOffset,
+			 endLine, endCharOffset);
+
+	pushNarrowedInputStream (language,
+				 startLine, startCharOffset,
+				 endLine, endCharOffset,
+				 sourceLineOffset);
+	tagFileResized = createTagsWithFallback1 (language);
+	popNarrowedInputStream  ();
+	return tagFileResized;
+
+}
+
+static bool createTagsWithFallback (
+	const char *const fileName, const langType language,
+	MIO *mio)
+{
+	bool tagFileResized = false;
+
+	Assert (0 <= language  &&  language < (int) LanguageCount);
+
+	if (!openInputFile (fileName, language, mio))
+		return false;
+
+	tagFileResized = createTagsWithFallback1 (language);
+	tagFileResized = forcePromises()? true: tagFileResized;
+
+	makeFileTag (fileName);
+	closeInputFile ();
+
 	return tagFileResized;
 }
 
 #ifdef HAVE_COPROC
-static boolean createTagsWithXcmd (
-		const char *const fileName, const langType language)
+static bool createTagsWithXcmd (
+		const char *const fileName, const langType language,
+		MIO *mio)
 {
-	boolean tagFileResized = FALSE;
+	bool tagFileResized = false;
 
-	if (openInputFile (fileName, language))
+	if (openInputFile (fileName, language, mio))
 	{
 		tagFileResized = invokeXcmd (fileName, language);
 
@@ -2059,7 +2251,7 @@ static void printGuessedParser (const char* const fileName, langType language)
 
 	if (language == LANG_IGNORE)
 	{
-		Option.printLanguage = ((int)TRUE) + 1;
+		Option.printLanguage = ((int)true) + 1;
 		parserName = "NONE";
 	}
 	else
@@ -2093,16 +2285,16 @@ static void addLanguageEncoding (const langType language,
 		Option.outputEncoding = eStrdup("UTF-8");
 }
 
-extern boolean processLanguageEncodingOption (const char *const option, const char *const parameter)
+extern bool processLanguageEncodingOption (const char *const option, const char *const parameter)
 {
 	langType language;
 
 	language = getLanguageComponentInOption (option, "input-encoding-");
 	if (language == LANG_IGNORE)
-		return FALSE;
+		return false;
 
 	addLanguageEncoding (language, parameter);
-	return TRUE;
+	return true;
 }
 
 extern void freeEncodingResources (void)
@@ -2135,21 +2327,27 @@ static void addParserPseudoTags (langType language)
 	}
 }
 
-extern boolean doesParserRequireMemoryStream (const langType language)
+extern bool doesParserRequireMemoryStream (const langType language)
 {
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	parserDefinition *const lang = LanguageTable [language];
 
-	return (lang->tagXpathTableCount > 0)? TRUE: FALSE;
+	if (lang->tagXpathTableCount > 0)
+		return true;
+
+	if (lang->method & METHOD_YAML)
+		return true;
+
+	return false;
 }
 
-extern boolean parseFile (const char *const fileName)
+extern bool parseFile (const char *const fileName)
 {
-	boolean tagFileResized = FALSE;
+	bool tagFileResized = false;
 	langType language;
+	MIO *mio;
 
-
-	language = getFileLanguage (fileName);
+	language = getFileLanguageAndKeepMIO (fileName, &mio);
 	Assert (language != LANG_AUTO);
 
 	if (Option.printLanguage)
@@ -2173,8 +2371,6 @@ extern boolean parseFile (const char *const fileName)
 	}
 	else
 	{
-		initializeParser (language);
-
 		if (Option.filter)
 			openTagFile ();
 
@@ -2184,19 +2380,16 @@ extern boolean parseFile (const char *const fileName)
 					EncodingMap[language] : Option.inputEncoding, Option.outputEncoding);
 #endif
 
-		if (Option.etags)
-			beginEtagsFile ();
+		setupWriter ();
 
-		addParserPseudoTags (language);
-
-		tagFileResized = createTagsWithFallback (fileName, language);
+		tagFileResized = createTagsWithFallback (fileName, language, mio);
 #ifdef HAVE_COPROC
 		if (LanguageTable [language]->method & METHOD_XCMD_AVAILABLE)
-			tagFileResized = createTagsWithXcmd (fileName, language)? TRUE: tagFileResized;
+			tagFileResized = createTagsWithXcmd (fileName, language, mio)? true: tagFileResized;
 #endif
 
-		if (Option.etags)
-			endEtagsFile (fileName);
+		teardownWriter (fileName);
+
 		if (Option.filter)
 			closeTagFile (tagFileResized);
 		addTotals (1, 0L, 0L);
@@ -2204,9 +2397,13 @@ extern boolean parseFile (const char *const fileName)
 #ifdef HAVE_ICONV
 		closeConverter ();
 #endif
-
+		if (mio)
+			mio_free (mio);
 		return tagFileResized;
 	}
+
+	if (mio)
+		mio_free (mio);
 	return tagFileResized;
 }
 
@@ -2246,7 +2443,7 @@ extern void notifyAvailabilityXcmdMethod (const langType language)
 	lang->method |= METHOD_XCMD_AVAILABLE;
 }
 
-extern void installTagRegexTable (const langType language)
+static void installTagRegexTable (const langType language)
 {
 	parserDefinition* lang;
 	unsigned int i;
@@ -2255,19 +2452,19 @@ extern void installTagRegexTable (const langType language)
 	lang = LanguageTable [language];
 
 
-	if ((lang->tagRegexTable != NULL) && (lang->tagRegexInstalled == FALSE))
+	if (lang->tagRegexTable != NULL)
 	{
 	    for (i = 0; i < lang->tagRegexCount; ++i)
 		    addTagRegex (language,
-			     lang->tagRegexTable [i].regex,
-			     lang->tagRegexTable [i].name,
-			     lang->tagRegexTable [i].kinds,
-			     lang->tagRegexTable [i].flags);
-	    lang->tagRegexInstalled = TRUE;
+				 lang->tagRegexTable [i].regex,
+				 lang->tagRegexTable [i].name,
+				 lang->tagRegexTable [i].kinds,
+				 lang->tagRegexTable [i].flags,
+				 (lang->tagRegexTable [i].disabled));
 	}
 }
 
-extern void installKeywordTable (const langType language)
+static void installKeywordTable (const langType language)
 {
 	parserDefinition* lang;
 	unsigned int i;
@@ -2275,17 +2472,16 @@ extern void installKeywordTable (const langType language)
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	lang = LanguageTable [language];
 
-	if ((lang->keywordTable != NULL) && (lang->keywordInstalled == FALSE))
+	if (lang->keywordTable != NULL)
 	{
 		for (i = 0; i < lang->keywordCount; ++i)
 			addKeyword (lang->keywordTable [i].name,
 				    language,
 				    lang->keywordTable [i].id);
-		lang->keywordInstalled = TRUE;
 	}
 }
 
-extern void installTagXpathTable (const langType language)
+static void installTagXpathTable (const langType language)
 {
 	parserDefinition* lang;
 	unsigned int i, j;
@@ -2293,23 +2489,24 @@ extern void installTagXpathTable (const langType language)
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	lang = LanguageTable [language];
 
-	if ((lang->tagXpathTableTable != NULL) && (lang->tagXpathInstalled == FALSE))
+	if (lang->tagXpathTableTable != NULL)
 	{
 		for (i = 0; i < lang->tagXpathTableCount; ++i)
 			for (j = 0; j < lang->tagXpathTableTable[i].count; ++j)
 				addTagXpath (language, lang->tagXpathTableTable[i].table + j);
-		lang->tagXpathInstalled = TRUE;
 		useXpathMethod (language);
 	}
 }
 
-extern void makeKindSeparatorsPseudoTags (const langType language,
-					  const struct sPtagDesc *pdesc)
+extern bool makeKindSeparatorsPseudoTags (const langType language,
+					     const ptagDesc *pdesc)
 {
 	parserDefinition* lang;
 	kindOption *kinds;
 	unsigned int kindCount;
 	unsigned int i, j;
+
+	bool r = false;
 
 	Assert (0 <= language  &&  language < (int) LanguageCount);
 	lang = LanguageTable [language];
@@ -2317,7 +2514,7 @@ extern void makeKindSeparatorsPseudoTags (const langType language,
 	kindCount = lang->kindCount;
 
 	if (kinds == NULL)
-		return;
+		return r;
 
 	for (i = 0; i < kindCount; ++i)
 	{
@@ -2361,23 +2558,27 @@ extern void makeKindSeparatorsPseudoTags (const langType language,
 			vStringClear (sepval);
 			vStringCatSWithEscaping (sepval, sep->separator);
 
-			writePseudoTag (pdesc, vStringValue (sepval),
-					name, lang->name);
+			r = writePseudoTag (pdesc, vStringValue (sepval),
+					    name, lang->name) || r;
 		}
 	}
+
+	return r;
 }
 
 struct makeKindDescriptionPseudoTagData {
 	const char* langName;
-	const struct sPtagDesc *pdesc;
+	const ptagDesc *pdesc;
+	bool written;
 };
 
-static boolean makeKindDescriptionPseudoTag (kindOption *kind,
+static bool makeKindDescriptionPseudoTag (kindOption *kind,
 					     void *user_data)
 {
 	struct makeKindDescriptionPseudoTagData *data = user_data;
 	vString *letter_and_name;
 	vString *description;
+	const char *d;
 
 	letter_and_name = vStringNew ();
 	description = vStringNew ();
@@ -2386,22 +2587,22 @@ static boolean makeKindDescriptionPseudoTag (kindOption *kind,
 	vStringPut (letter_and_name, ',');
 	vStringCatS (letter_and_name, kind -> name);
 
+	d = kind->description? kind->description: kind->name;
 	vStringPut (description, '/');
-	vStringCatSWithEscapingAsPattern (description,
-					  kind -> description);
+	vStringCatSWithEscapingAsPattern (description, d);
 	vStringPut (description, '/');
-	writePseudoTag (data->pdesc, vStringValue (letter_and_name),
-			vStringValue (description),
-			data->langName);
+	data->written |=  writePseudoTag (data->pdesc, vStringValue (letter_and_name),
+					  vStringValue (description),
+					  data->langName);
 
 	vStringDelete (description);
 	vStringDelete (letter_and_name);
 
-	return FALSE;
+	return false;
 }
 
-extern void makeKindDescriptionsPseudoTags (const langType language,
-					    const struct sPtagDesc *pdesc)
+extern bool makeKindDescriptionsPseudoTags (const langType language,
+					    const ptagDesc *pdesc)
 {
 
 	parserDefinition* lang;
@@ -2416,12 +2617,55 @@ extern void makeKindDescriptionsPseudoTags (const langType language,
 
 	data.langName = lang->name;
 	data.pdesc = pdesc;
+	data.written = false;
 
 	for (i = 0; i < kindCount; ++i)
 		makeKindDescriptionPseudoTag (kinds + i, &data);
 
 	foreachRegexKinds (language, makeKindDescriptionPseudoTag, &data);
 	foreachXcmdKinds (language, makeKindDescriptionPseudoTag, &data);
+
+	return data.written;
+}
+
+/*
+*   Copyright (c) 2016, Szymon Tomasz Stefanek
+*
+*   This source code is released for free distribution under the terms of the
+*   GNU General Public License version 2 or (at your option) any later version.
+*
+*   Anonymous name generator
+*/
+
+extern void anonReset (void)
+{
+	parserDefinition* lang = LanguageTable [getInputLanguage ()];
+	lang -> anonumousIdentiferId = 0;
+}
+
+static unsigned int anonHash(const unsigned char *str)
+{
+	unsigned int hash = 5381;
+	int c;
+
+	while((c = *str++))
+		hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+
+	return hash ;
+}
+
+extern void anonGenerate (vString *buffer, const char *prefix, int kind)
+{
+	parserDefinition* lang = LanguageTable [getInputLanguage ()];
+	lang -> anonumousIdentiferId ++;
+
+	char szNum[32];
+
+	vStringCopyS(buffer, prefix);
+
+	unsigned int uHash = anonHash((const unsigned char *)getInputFileName());
+	sprintf(szNum,"%08x%02x%02x",uHash,lang -> anonumousIdentiferId, kind);
+	vStringCatS(buffer,szNum);
 }
 
 /*
@@ -2432,8 +2676,17 @@ typedef enum {
 	KIND_COUNT
 } CTST_Kind;
 
+typedef enum {
+	R_BROKEN_REF,
+} CTST_BrokenRole;
+
+static roleDesc CTST_BrokenRoles [] = {
+	{true, "broken", "broken" },
+};
+
 static kindOption CTST_Kinds[KIND_COUNT] = {
-	{TRUE, 'b', "broken tag", "name with unwanted characters"},
+	{true, 'b', "broken tag", "name with unwanted characters",
+	 .referenceOnly = false, ATTACH_ROLES (CTST_BrokenRoles) },
 };
 
 static void createCTSTTags (void)
@@ -2471,8 +2724,6 @@ static parserDefinition *CTagsSelfTestParser (void)
 	def->kinds = CTST_Kinds;
 	def->kindCount = KIND_COUNT;
 	def->parser = createCTSTTags;
-	def->invisible = TRUE;
+	def->invisible = true;
 	return def;
 }
-
-/* vi:set tabstop=4 shiftwidth=4 nowrap: */

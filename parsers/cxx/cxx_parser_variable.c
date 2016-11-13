@@ -21,8 +21,8 @@
 
 //
 // Attempt to extract variable declarations from the chain.
-// Returns TRUE if at least one variable was extracted.
-// Returns FALSE if a variable declaration could not be identified.
+// Returns true if at least one variable was extracted.
+// Returns false if a variable declaration could not be identified.
 //
 // Recognized variable declarations are of the following kinds:
 //
@@ -43,21 +43,21 @@
 //  - there is a terminator at the end: either ; or {
 //
 // Notes:
-// - Be aware that if this function returns TRUE then the pChain very likely has been modified
+// - Be aware that if this function returns true then the pChain very likely has been modified
 //   (partially destroyed) as part of the type extraction algorithm.
-//   If the function returns FALSE the chain has not been modified (and
+//   If the function returns false the chain has not been modified (and
 //   to extract something else from it).
 //
 // - This function is quite tricky.
 //
-boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int uFlags)
+bool cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int uFlags)
 {
 	CXX_DEBUG_ENTER();
 
 	if(pChain->iCount < 1)
 	{
 		CXX_DEBUG_LEAVE_TEXT("Chain is empty");
-		return FALSE;
+		return false;
 	}
 
 #ifdef CXX_DO_DEBUGGING
@@ -85,14 +85,14 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 
 	CXXToken * t = cxxTokenChainFirst(pChain);
 
-	enum CXXTagKind eScopeKind = cxxScopeGetKind();
+	enum CXXScopeType eScopeType = cxxScopeGetType();
 
 	CXX_DEBUG_ASSERT(t,"There should be an initial token here");
 
 	if(!cxxTokenTypeIsOneOf(t,CXXTokenTypeIdentifier | CXXTokenTypeKeyword))
 	{
 		CXX_DEBUG_LEAVE_TEXT("Statement does not start with identifier or keyword");
-		return FALSE;
+		return false;
 	}
 
 	// Handle the special case of delete/new keywords at the beginning
@@ -105,10 +105,10 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 		)
 	{
 		CXX_DEBUG_LEAVE_TEXT("Statement looks like a delete or new call");
-		return FALSE;
+		return false;
 	}
 
-	boolean bGotVariable = FALSE;
+	bool bGotVariable = false;
 
 	// Loop over the whole statement.
 
@@ -203,16 +203,32 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 			{
 				// At a parenthesis chain we need some additional checks.
 				if(
+						// check for function pointers or nasty arrays
+						// Possible cases:
+						//    ret type (*variable)(params)
+						//    ret type (* const (variable[4]))(params)
 						t->pNext &&
-						cxxTokenTypeIs(t->pNext,CXXTokenTypeParenthesisChain) &&
-						cxxParserTokenChainLooksLikeFunctionParameterList(
-								t->pNext->pChain,
-								NULL
-							) &&
-						(pIdentifier = cxxTokenChainLastPossiblyNestedTokenOfType(
+						(
+							(
+								cxxTokenTypeIs(t->pNext,CXXTokenTypeParenthesisChain) &&
+								cxxParserTokenChainLooksLikeFunctionParameterList(
+										t->pNext->pChain,
+										NULL
+									)
+							) ||
+							cxxTokenTypeIs(t->pNext,CXXTokenTypeSquareParenthesisChain)
+						) &&
+						(pIdentifier = cxxTokenChainFirstPossiblyNestedTokenOfType(
 								t->pChain,
-								CXXTokenTypeIdentifier
-							))
+								CXXTokenTypeIdentifier,
+								NULL
+							)) &&
+						// Discard function declarations with function return types
+						// like void (*A(B))(C);
+						(
+							(!pIdentifier->pNext) ||
+							(!cxxTokenTypeIs(pIdentifier->pNext,CXXTokenTypeParenthesisChain))
+						)
 					)
 				{
 					// A function pointer.
@@ -237,8 +253,8 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 				} else if(
 						cxxTokenTypeIs(t->pPrev,CXXTokenTypeIdentifier) &&
 						(
-							(eScopeKind == CXXTagKindNAMESPACE) ||
-							(eScopeKind == CXXTagKindFUNCTION)
+							(eScopeType == CXXScopeTypeNamespace) ||
+							(eScopeType == CXXScopeTypeFunction)
 						) &&
 						cxxParserCurrentLanguageIsCPP() &&
 						cxxParserTokenChainLooksLikeConstructorParameterSet(t->pChain)
@@ -315,11 +331,11 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 						(!cxxTokenTypeIsOneOf(
 								t->pNext,
 								CXXTokenTypeComma | CXXTokenTypeSemicolon |
-								CXXTokenTypeAssignment
+								CXXTokenTypeAssignment | CXXTokenTypeBracketChain
 							))
 					)
 				{
-					CXX_DEBUG_LEAVE_TEXT("No comma, semicolon or assignment after array specifier");
+					CXX_DEBUG_LEAVE_TEXT("No comma, semicolon, = or {} after []");
 					return bGotVariable;
 				}
 
@@ -353,6 +369,12 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 		// Skip back to the beginning of the scope, if any
 		while(pTokenBefore->eType == CXXTokenTypeMultipleColons)
 		{
+			if(!cxxParserCurrentLanguageIsCPP())
+			{
+				CXX_DEBUG_LEAVE_TEXT("Syntax error: found multiple colons in C language");
+				return false;
+			}
+
 			pTokenBefore = pTokenBefore->pPrev;
 			if(!pTokenBefore)
 			{
@@ -442,7 +464,7 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 				}
 			}
 
-			bGotVariable = TRUE;
+			bGotVariable = true;
 		}
 
 		// Goodie. We have an identifier and almost certainly a type here.
@@ -476,7 +498,7 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 				CXXToken * pScopeId = cxxTokenChainExtractRange(pScopeStart,pPartEnd->pPrev,0);
 				cxxScopePush(
 						pScopeId,
-						CXXTagKindCLASS,
+						CXXScopeTypeClass,
 						// WARNING: We don't know if it's really a class! (FIXME?)
 						CXXScopeAccessUnknown
 					);
@@ -491,7 +513,7 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 			}
 		}
 
-		boolean bKnRStyleParameters =
+		bool bKnRStyleParameters =
 				(uFlags & CXXExtractVariableDeclarationsKnRStyleParameters);
 
 		tagEntryInfo * tag = cxxTagBegin(
@@ -535,47 +557,46 @@ boolean cxxParserExtractVariableDeclarations(CXXTokenChain * pChain,unsigned int
 			}
 
 			// anything that remains is part of type
-			CXXToken * pTypeToken = cxxTagSetTypeField(cxxTokenChainFirst(pChain),t->pPrev);
+			CXXToken * pTypeToken = cxxTagCheckAndSetTypeField(cxxTokenChainFirst(pChain),t->pPrev);
 
 			tag->isFileScope = bKnRStyleParameters ?
-					TRUE :
+					true :
 					(
 						(
-							(eScopeKind == CXXTagKindNAMESPACE) &&
+							(eScopeType == CXXScopeTypeNamespace) &&
 							(g_cxx.uKeywordState & CXXParserKeywordStateSeenStatic) &&
 							(!isInputHeaderFile())
 						) ||
 						// locals are always hidden
-						(eScopeKind == CXXTagKindFUNCTION) ||
+						(eScopeType == CXXScopeTypeFunction) ||
 						(
-							(eScopeKind != CXXTagKindNAMESPACE) &&
-							(eScopeKind != CXXTagKindFUNCTION) &&
+							(eScopeType != CXXScopeTypeNamespace) &&
+							(eScopeType != CXXScopeTypeFunction) &&
 							(!isInputHeaderFile())
 						)
 					);
 
 			vString * pszProperties = NULL;
-			
-			if(
-				(cxxParserCurrentLanguageIsCPP() && cxxTagCPPFieldEnabled(CXXTagCPPFieldProperties)) ||
-				(cxxParserCurrentLanguageIsC() && cxxTagCFieldEnabled(CXXTagCFieldProperties))
-			)
+
+			if(cxxTagFieldEnabled(CXXTagFieldProperties))
 			{
 				unsigned int uProperties = 0;
-		
+
 				if(g_cxx.uKeywordState & CXXParserKeywordStateSeenStatic)
 					uProperties |= CXXTagPropertyStatic;
 				if(g_cxx.uKeywordState & CXXParserKeywordStateSeenExtern)
 					uProperties |= CXXTagPropertyExtern;
 				if(g_cxx.uKeywordState & CXXParserKeywordStateSeenMutable)
 					uProperties |= CXXTagPropertyMutable;
+				if(g_cxx.uKeywordState & CXXParserKeywordStateSeenAttributeDeprecated)
+					uProperties |= CXXTagPropertyDeprecated;
 				// Volatile is part of the type, so we don't mark it as a property
 				//if(g_cxx.uKeywordState & CXXParserKeywordStateSeenVolatile)
 				//	uProperties |= CXXTagPropertyVolatile;
 
 				pszProperties = cxxTagSetProperties(uProperties);
 			}
-	
+
 			cxxTagCommit();
 
 			if(pTypeToken)

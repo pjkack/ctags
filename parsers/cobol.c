@@ -15,7 +15,7 @@
 #include "parse.h"
 #include "routines.h"
 
-static const tagRegexTable const cobolTagRegexTable[] = {
+static tagRegexTable cobolTagRegexTable[] = {
 	{"^[ \t]*[0-9]+[ \t]+([A-Z0-9][A-Z0-9-]*)[ \t]+("
 	 "BLANK|OCCURS|IS|JUST|PIC|REDEFINES|RENAMES|SIGN|SYNC|USAGE|VALUE"
 	 ")", "\\1",
@@ -47,5 +47,3 @@ extern parserDefinition* CobolParser (void)
 	def->method     = METHOD_NOT_CRAFTED|METHOD_REGEX;
 	return def;
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */

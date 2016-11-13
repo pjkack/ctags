@@ -12,13 +12,18 @@
 #include "vstring.h"
 #include "debug.h"
 
+#include "cxx_tag.h"
 #include "cxx_debug.h"
 #include "cxx_token_chain.h"
+
+#ifdef CXX_DO_DEBUGGING
+#include "cxx_parser_internal.h"
+#endif
 
 // The tokens defining current scope
 static CXXTokenChain * g_pScope = NULL;
 static vString * g_szScopeName = NULL;
-static boolean g_bScopeNameDirty = TRUE;
+static bool g_bScopeNameDirty = true;
 
 void cxxScopeInit(void)
 {
@@ -46,24 +51,32 @@ void cxxScopeClear(void)
 	}
 }
 
-boolean cxxScopeIsGlobal(void)
+bool cxxScopeIsGlobal(void)
 {
 	return (g_pScope->iCount < 1);
 }
 
-enum CXXTagKind cxxScopeGetVariableKind(void)
+enum CXXScopeType cxxScopeGetType(void)
 {
-	switch(cxxScopeGetKind())
+	if(g_pScope->iCount < 1)
+		return CXXScopeTypeNamespace;
+	return (enum CXXScopeType)g_pScope->pTail->uInternalScopeType;
+}
+
+unsigned int cxxScopeGetVariableKind(void)
+{
+	switch(cxxScopeGetType())
 	{
-		case CXXTagKindCLASS:
-		case CXXTagKindSTRUCT:
-		case CXXTagKindUNION:
+		case CXXScopeTypeClass:
+		case CXXScopeTypeUnion:
+		case CXXScopeTypeStruct:
 			return CXXTagKindMEMBER;
 		break;
-		case CXXTagKindFUNCTION:
+		case CXXScopeTypeFunction:
 			return CXXTagKindLOCAL;
 		break;
-		//case CXXTagKindNAMESPACE:
+		//case CXXScopeTypeNamespace:
+		//case CXXScopeTypeEnum:
 		default:
 			// fall down
 		break;
@@ -71,12 +84,35 @@ enum CXXTagKind cxxScopeGetVariableKind(void)
 	return CXXTagKindVARIABLE;
 }
 
-enum CXXTagKind cxxScopeGetKind(void)
+
+unsigned int cxxScopeGetKind(void)
 {
-	if(g_pScope->iCount < 1)
-		return CXXTagKindNAMESPACE;
-	return (enum CXXTagKind)g_pScope->pTail->uInternalScopeKind;
+	CXX_DEBUG_ASSERT(g_pScope->iCount >= 0,"Must not be called in global scope");
+
+	switch(g_pScope->pTail->uInternalScopeType)
+	{
+		case CXXScopeTypeNamespace:
+			CXX_DEBUG_ASSERT(cxxParserCurrentLanguageIsCPP(),"C++ only");
+			return CXXTagCPPKindNAMESPACE;
+		case CXXScopeTypeClass:
+			CXX_DEBUG_ASSERT(cxxParserCurrentLanguageIsCPP(),"C++ only");
+			return CXXTagCPPKindCLASS;
+		case CXXScopeTypeEnum:
+			return CXXTagKindENUM;
+		case CXXScopeTypeFunction:
+			return CXXTagKindFUNCTION;
+		case CXXScopeTypeStruct:
+			return CXXTagKindSTRUCT;
+		case CXXScopeTypeUnion:
+			return CXXTagKindUNION;
+		default:
+			CXX_DEBUG_ASSERT(false,"Unhandled scope type!");
+			break;
+	}
+
+	return CXXTagKindFUNCTION;
 }
+
 
 enum CXXScopeAccess cxxScopeGetAccess(void)
 {
@@ -104,7 +140,7 @@ const char * cxxScopeGetFullName(void)
 
 	if(g_pScope->iCount < 1)
 	{
-		g_bScopeNameDirty = FALSE;
+		g_bScopeNameDirty = false;
 		return NULL;
 	}
 
@@ -120,7 +156,7 @@ const char * cxxScopeGetFullName(void)
 			CXXTokenChainJoinNoTrailingSpaces
 		);
 
-	g_bScopeNameDirty = FALSE;
+	g_bScopeNameDirty = false;
 	return g_szScopeName->buffer;
 }
 
@@ -132,7 +168,7 @@ vString * cxxScopeGetFullNameAsString(void)
 	{
 		ret = g_szScopeName;
 		g_szScopeName = NULL;
-		g_bScopeNameDirty = TRUE;
+		g_bScopeNameDirty = true;
 		return ret;
 	}
 
@@ -179,7 +215,7 @@ void cxxScopeSetAccess(enum CXXScopeAccess eAccess)
 
 void cxxScopePush(
 		CXXToken * t,
-		enum CXXTagKind eScopeKind,
+		enum CXXScopeType eScopeType,
 		enum CXXScopeAccess eInitialAccess
 	)
 {
@@ -192,9 +228,9 @@ void cxxScopePush(
 			"The scope name should have a text"
 		);
 	cxxTokenChainAppend(g_pScope,t);
-	t->uInternalScopeKind = (unsigned char)eScopeKind;
+	t->uInternalScopeType = (unsigned char)eScopeType;
 	t->uInternalScopeAccess = (unsigned char)eInitialAccess;
-	g_bScopeNameDirty = TRUE;
+	g_bScopeNameDirty = true;
 
 #ifdef CXX_DO_DEBUGGING
 	const char * szScopeName = cxxScopeGetFullName();
@@ -211,7 +247,7 @@ void cxxScopePop(void)
 		);
 
 	cxxTokenDestroy(cxxTokenChainTakeLast(g_pScope));
-	g_bScopeNameDirty = TRUE;
+	g_bScopeNameDirty = true;
 
 #ifdef CXX_DO_DEBUGGING
 	const char * szScopeName = cxxScopeGetFullName();

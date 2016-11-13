@@ -28,6 +28,7 @@
 *   DATA DEFINITIONS
 */
 typedef enum {
+	K_EOF = -1,
 	K_CHAPTER = 0,
 	K_SECTION,
 	K_SUBSECTION,
@@ -36,10 +37,10 @@ typedef enum {
 } rstKind;
 
 static kindOption RstKinds[] = {
-	{ TRUE, 'c', "chapter",       "chapters"},
-	{ TRUE, 's', "section",       "sections" },
-	{ TRUE, 'S', "subsection",    "subsections" },
-	{ TRUE, 't', "subsubsection", "subsubsections" }
+	{ true, 'c', "chapter",       "chapters"},
+	{ true, 's', "section",       "sections" },
+	{ true, 'S', "subsection",    "subsections" },
+	{ true, 't', "subsubsection", "subsubsections" }
 };
 
 typedef enum {
@@ -50,8 +51,8 @@ static fieldSpec RstFields [] = {
 	{
 		.name = "sectionMarker",
 		.description = "character used for declaring section",
-		.enabled = FALSE,
-	}
+		.enabled = false,
+	},
 };
 
 static char kindchars[SECTION_COUNT];
@@ -65,12 +66,28 @@ static NestingLevels *nestingLevels = NULL;
 static NestingLevel *getNestingLevel(const int kind)
 {
 	NestingLevel *nl;
+	tagEntryInfo *e;
+
+	int d = 0;
+
+	if (kind > K_EOF)
+	{
+		d++;
+		/* 1. we want the line before the '---' underline chars */
+		d++;
+		/* 2. we want the line before the next section/chapter title. */
+	}
 
 	while (1)
 	{
 		nl = nestingLevelsGetCurrent(nestingLevels);
-		if (nl && nl->kindIndex >= kind)
+		e = getEntryOfNestingLevel (nl);
+		if ((nl && (e == NULL)) || (e && (e->kind - RstKinds) >= kind))
+		{
+			if (e)
+				e->extensionFields.endLine = (getInputLineNumber() - d);
 			nestingLevelsPop(nestingLevels);
+		}
 		else
 			break;
 	}
@@ -81,6 +98,9 @@ static void makeRstTag(const vString* const name, const int kind, const MIOPos f
 		       char marker)
 {
 	const NestingLevel *const nl = getNestingLevel(kind);
+	tagEntryInfo *parent;
+
+	int r = CORK_NIL;
 
 	if (vStringLength (name) > 0)
 	{
@@ -92,22 +112,39 @@ static void makeRstTag(const vString* const name, const int kind, const MIOPos f
 		e.lineNumber--;	/* we want the line before the '---' underline chars */
 		e.filePosition = filepos;
 
-		if (nl && nl->kindIndex < kind)
+		parent = getEntryOfNestingLevel (nl);
+		if (parent && ((parent->kind - RstKinds) < kind))
 		{
-			e.extensionFields.scopeKind = &(RstKinds [nl->kindIndex]);
-			e.extensionFields.scopeName = vStringValue (nl->name);
+#if 1
+			e.extensionFields.scopeKind = &(RstKinds [parent->kind - RstKinds]);
+			e.extensionFields.scopeName = parent->name;
+#else
+			/* TODO
+
+			   Following code makes the scope information full qualified form.
+			   Do users want the full qualified form?
+			   --- ./Units/rst.simple.d/expected.tags	2015-12-18 01:32:35.574255617 +0900
+			   +++ /home/yamato/var/ctags-github/Units/rst.simple.d/FILTERED.tmp	2016-05-05 03:05:38.165604756 +0900
+			   @@ -5,2 +5,2 @@
+			   -Subsection 1.1.1	input.rst	/^Subsection 1.1.1$/;"	S	section:Section 1.1
+			   -Subsubsection 1.1.1.1	input.rst	/^Subsubsection 1.1.1.1$/;"	t	subsection:Subsection 1.1.1
+			   +Subsection 1.1.1	input.rst	/^Subsection 1.1.1$/;"	S	section:Chapter 1.Section 1.1
+			   +Subsubsection 1.1.1.1	input.rst	/^Subsubsection 1.1.1.1$/;"	t	subsection:Chapter 1.Section 1.1.Subsection 1.1.1
+			*/
+			   e.extensionFields.scopeIndex = nl->corkIndex;
+#endif
 		}
 
 		m[0] = marker;
 		attachParserField (&e, RstFields [F_SECTION_MARKER].ftype, m);
-		makeTagEntry (&e);
+		r = makeTagEntry (&e);
 	}
-	nestingLevelsPush(nestingLevels, name, kind);
+	nestingLevelsPush(nestingLevels, r);
 }
 
 
 /* checks if str is all the same character */
-static boolean issame(const char *str)
+static bool issame(const char *str)
 {
 	char first = *str;
 
@@ -118,9 +155,9 @@ static boolean issame(const char *str)
 		str++;
 		c = *str;
 		if (c && c != first)
-			return FALSE;
+			return false;
 	}
-	return TRUE;
+	return true;
 }
 
 
@@ -181,12 +218,15 @@ static void findRstTags (void)
 
 	memset(&filepos, 0, sizeof(MIOPos));
 	memset(kindchars, 0, sizeof kindchars);
-	nestingLevels = nestingLevelsNew();
+	nestingLevels = nestingLevelsNew(0);
 
 	while ((line = readLineFromInputFile ()) != NULL)
 	{
 		int line_len = strlen((const char*) line);
 		int name_len_bytes = vStringLength(name);
+		/* FIXME: this isn't right, actually we need the real display width,
+		 * taking into account double-width characters and stuff like that.
+		 * But duh. */
 		int name_len = utf8_strlen(vStringValue(name), name_len_bytes);
 
 		/* if the name doesn't look like UTF-8, assume one-byte charset */
@@ -212,8 +252,9 @@ static void findRstTags (void)
 			vStringCatS(name, (const char*)line);
 			filepos = getInputFilePosition();
 		}
-		vStringTerminate(name);
 	}
+	/* Force popping all nesting levels */
+	getNestingLevel (K_EOF);
 	vStringDelete (name);
 	nestingLevelsFree(nestingLevels);
 }
@@ -231,7 +272,7 @@ extern parserDefinition* RstParser (void)
 	def->fieldSpecs = RstFields;
 	def->fieldSpecCount = ARRAY_SIZE (RstFields);
 
+	def->useCork = true;
+
 	return def;
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */

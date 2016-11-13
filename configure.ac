@@ -80,8 +80,6 @@ AH_TEMPLATE([NON_CONST_PUTENV_PROTOTYPE],
 	doesn't declare its argument as "const char *".])
 AH_TEMPLATE([MSDOS_STYLE_PATH],
 	[Define to 1 if your system uses MS-DOS style path.])
-AH_TEMPLATE([HAVE_FMEMOPEN],
-	[Define this value if your system has fmemopen.])
 
 
 # Report system info
@@ -250,12 +248,12 @@ AM_CONDITIONAL(INSTALL_ETAGS, [test "x$enable_etags" = "xyes"])
 AM_CONDITIONAL(USE_READCMD, [test "x$enable_readcmd" = "xyes"])
 
 dnl AC_MSG_NOTICE(Change with $program_transform_name)
-ctags_name_executable=`echo ctags | sed "$program_transform_name"`
-AC_SUBST(ctags_name_executable)
-etags_name_executable=`echo etags | sed "$program_transform_name"`
-AC_SUBST(etags_name_executable)
+CTAGS_NAME_EXECUTABLE=`echo ctags | sed "$program_transform_name"`
+AC_SUBST(CTAGS_NAME_EXECUTABLE)
+ETAGS_NAME_EXECUTABLE=`echo etags | sed "$program_transform_name"`
+AC_SUBST(ETAGS_NAME_EXECUTABLE)
 
-AC_DEFINE_UNQUOTED(ETAGS, "$etags_name_executable")
+AC_DEFINE_UNQUOTED(ETAGS, "$ETAGS_NAME_EXECUTABLE")
 
 if test "$enable_custom_config" = no -o "$enable_custom_config" = yes ; then
 	AC_MSG_NOTICE(no name supplied for custom configuration file)
@@ -276,6 +274,7 @@ AM_CONDITIONAL(ENABLE_DEBUGGING, [test "x$enable_debugging" = "xyes"])
 # -------------------
 
 AC_PROG_CC
+AC_PROG_CC_C99
 
 if test "${with_sparse_cgcc}" = "yes"; then
 	REAL_CC="${CC}"
@@ -302,6 +301,8 @@ AC_SYS_LARGEFILE
 AC_CHECK_PROGS([perl_found], [perl], [yes], [no])
 AM_CONDITIONAL([RUN_OPTLIB2C], [test "${perl_found}" = "yes"])
 
+AC_PATH_PROGS(RST2MAN, [rst2man rst2man.py], [no])
+AM_CONDITIONAL([HAVE_RST2MAN], [test "x$RST2MAN" != "xno"])
 
 # Checks for operating environment
 # --------------------------------
@@ -381,7 +382,7 @@ fi
 # Checks for header files
 # -----------------------
 
-AC_CHECK_HEADERS([dirent.h fcntl.h io.h stat.h stdlib.h string.h])
+AC_CHECK_HEADERS([dirent.h errno.h fcntl.h io.h limits.h stat.h stdlib.h string.h])
 AC_CHECK_HEADERS([time.h types.h unistd.h])
 AC_CHECK_HEADERS([sys/dir.h sys/stat.h sys/times.h sys/types.h sys/wait.h])
 
@@ -586,14 +587,30 @@ AM_CONDITIONAL([ENABLE_XCMD], [test "xyes" = "x$enable_xcmd"])
 
 AH_TEMPLATE([HAVE_LIBXML],
 	[Define this value if libxml is available.])
-PKG_CHECK_MODULES(LIBXML, libxml-2.0,
+dnl About the condition of version
+dnl see https://mail.gnome.org/archives/xml/2010-February/msg00008.html
+PKG_CHECK_MODULES(LIBXML, [libxml-2.0 >= 2.7.7],
 		       [have_libxml=yes
 		       AC_DEFINE(HAVE_LIBXML)],
 		       [have_libxml=no])
 AM_CONDITIONAL(HAVE_LIBXML, test "x$have_libxml" = xyes)
 
-AC_CHECK_FUNCS(fmemopen,[have_fmemopen=yes],[have_fmemopen=no])
-AM_CONDITIONAL(HAVE_FMEMOPEN, test "x$have_fmemopen" = xyes)
+AH_TEMPLATE([HAVE_JANSSON],
+	[Define this value if jansson is available.])
+PKG_CHECK_MODULES(JANSSON, jansson,
+		       [have_jansson=yes
+		       AC_DEFINE(HAVE_JANSSON)],
+		       [have_jansson=no])
+AM_CONDITIONAL(HAVE_JANSSON, test "x$have_jansson" = xyes)
+
+AH_TEMPLATE([HAVE_LIBYAML],
+	[Define this value if libyaml is available.])
+PKG_CHECK_MODULES(LIBYAML, yaml-0.1,
+		       [have_libyaml=yes
+		       AC_DEFINE(HAVE_LIBYAML)],
+		       [have_libyaml=no])
+AM_CONDITIONAL(HAVE_LIBYAML, test "x$have_libyaml" = xyes)
+
 
 
 # Checks for missing prototypes
@@ -660,7 +677,8 @@ fi
 AC_CHECK_FUNCS([mblen], [], [HAVE_MBLEN=1], [])
 
 AC_CONFIG_FILES([Makefile
-		 ctags.1])
+		 man/ctags.1.rst
+		 ])
 
 AC_OUTPUT
 

@@ -16,9 +16,9 @@
 
 #include "cxx_token.h"
 
-enum CXXTagKind
+// Tag kinds common to all (sub)languages this parser supports
+enum CXXTagCommonKind
 {
-	CXXTagKindCLASS,
 	CXXTagKindMACRO,
 	CXXTagKindENUMERATOR,
 	CXXTagKindFUNCTION,
@@ -26,7 +26,6 @@ enum CXXTagKind
 	CXXTagKindINCLUDE,
 	CXXTagKindLOCAL,
 	CXXTagKindMEMBER,
-	CXXTagKindNAMESPACE,
 	CXXTagKindPROTOTYPE,
 	CXXTagKindSTRUCT,
 	CXXTagKindTYPEDEF,
@@ -35,48 +34,69 @@ enum CXXTagKind
 	CXXTagKindEXTERNVAR,
 	CXXTagKindPARAMETER,
 	CXXTagKindLABEL,
-	CXXTagKindNAME,
-	CXXTagKindUSING
+
+	CXXTagCommonKindCount
 };
 
-typedef enum _CXXTagCPPField
+// Tags specific to the CPP language.
+enum CXXTagCPPKind
 {
-	CXXTagCPPFieldEndLine,
-	CXXTagCPPFieldTemplate,
-	CXXTagCPPFieldLambdaCaptureList,
-	CXXTagCPPFieldProperties
-} CXXTagCPPField;
+	CXXTagCPPKindCLASS = CXXTagCommonKindCount,
+	CXXTagCPPKindNAMESPACE,
+	CXXTagCPPKindALIAS,
+	CXXTagCPPKindNAME,
+	CXXTagCPPKindUSING
+};
 
-typedef enum _CXXTagCField
+// The fields common to all (sub)languages this parser supports.
+enum CXXTagCommonField
 {
-	CXXTagCFieldEndLine,
-	CXXTagCFieldProperties
-} CXXTagCField;
+	CXXTagFieldProperties,
+	
+	CXXTagCommonFieldCount
+};
+
+// The fields specific to the CPP language.
+enum CXXTagCPPField
+{
+	CXXTagCPPFieldTemplate = CXXTagCommonFieldCount,
+	CXXTagCPPFieldLambdaCaptureList,
+	CXXTagCPPFieldAliasedName
+};
+
 
 fieldSpec * cxxTagGetCPPFieldSpecifiers(void);
 int cxxTagGetCPPFieldSpecifierCount(void);
-int cxxTagCPPFieldEnabled(CXXTagCPPField eField);
 
 fieldSpec * cxxTagGetCFieldSpecifiers(void);
 int cxxTagGetCFieldSpecifierCount(void);
-int cxxTagCFieldEnabled(CXXTagCField eField);
 
-kindOption * cxxTagGetKindOptions(void);
-int cxxTagGetKindOptionCount(void);
-boolean cxxTagKindEnabled(enum CXXTagKind eKindId);
+bool cxxTagFieldEnabled(unsigned int uField);
 
-// Begin composing a tag.
+kindOption * cxxTagGetCKindOptions(void);
+int cxxTagGetCKindOptionCount(void);
+
+kindOption * cxxTagGetCPPKindOptions(void);
+int cxxTagGetCPPKindOptionCount(void);
+
+// Returns true if the specified tag kind is enabled in the current language
+bool cxxTagKindEnabled(unsigned int uTagKind);
+
+// Begin composing a tag. The tag kind must correspond to the current language.
 // Returns NULL if the tag should *not* be included in the output
 // or the tag entry info that can be filled up with extension fields.
 // Must be followed by cxxTagCommit() if it returns a non-NULL value.
 // The pToken ownership is NOT transferred.
-tagEntryInfo * cxxTagBegin(enum CXXTagKind eKindId,CXXToken * pToken);
+tagEntryInfo * cxxTagBegin(unsigned int uKind,CXXToken * pToken);
 
 // Set the type of the current tag from the specified token sequence
 // (which must belong to the same chain!).
-// Returns a token that must be destroyed after cxxTagCommit() has
-// been called.
-CXXToken * cxxTagSetTypeField(
+// Before setting the type this function will check that the specified
+// range of tokens looks reasonable for a type name and if it looks
+// suspicious will refuse to emit it.
+// If the type is effectively set then the return value is a token that must
+// be destroyed after cxxTagCommit() has been called.
+CXXToken * cxxTagCheckAndSetTypeField(
 		CXXToken * pTypeStart,
 		CXXToken * pTypeEnd
 	);
@@ -114,7 +134,11 @@ typedef enum _CXXTagProperty
 	// Template specialization a<x>()
 	CXXTagPropertyTemplateSpecialization = (1 << 13),
 	// Template specialization of scope a<x>::b() (which implies TemplateSpec too)
-	CXXTagPropertyScopeTemplateSpecialization = (1 << 14)
+	CXXTagPropertyScopeTemplateSpecialization = (1 << 14),
+	// __attribute__((deprecated)) has been seen
+	CXXTagPropertyDeprecated = (1 << 15),
+	// scoped enum (C++11)
+	CXXTagPropertyScopedEnum = (1 << 16)
 } CXXTagProperty;
 
 // Set the modifiers field of the tag.
@@ -123,39 +147,25 @@ typedef enum _CXXTagProperty
 // not enabled or similar...)
 vString * cxxTagSetProperties(unsigned int uProperties);
 
-// Set a parser-local CPP field. The szValue pointer must persist
+// Set a parser-local field. The szValue pointer must persist
 // until cxxTagCommit() is called.
-void cxxTagSetCPPField(CXXTagCPPField eField,const char * szValue);
+void cxxTagSetField(unsigned int uField,const char * szValue);
 
 // Set a parser-local CPP field for a tag in cork queue.
 // The szValue pointer is copied.
 // Make sure that the field is enabled before calling this function.
-void cxxTagSetCorkQueueCPPField(
+void cxxTagSetCorkQueueField(
 		int iIndex,
-		CXXTagCPPField eField,
+		unsigned int uField,
 		const char * szValue
 	);
-
-// Set a parser-local C field. The szValue pointer must persist
-// until cxxTagCommit() is called.
-void cxxTagSetCField(CXXTagCField eField,const char * szValue);
-
-// Set a parser-local C field for a tag in cork queue.
-// The szValue pointer is copied.
-// Make sure that the field is enabled before calling this function.
-void cxxTagSetCorkQueueCField(
-		int iIndex,
-		CXXTagCField eField,
-		const char * szValue
-	);
-
 
 // Commit the composed tag. Must follow a succesfull cxxTagBegin() call.
 // Returns the index of the tag in the cork queue.
 int cxxTagCommit(void);
 
 // Same as cxxTagBegin() eventually followed by cxxTagCommit()
-void cxxTag(enum CXXTagKind eKindId,CXXToken * pToken);
+void cxxTag(unsigned int uKind,CXXToken * pToken);
 
 typedef enum {
 	CR_MACRO_UNDEF,
@@ -165,5 +175,9 @@ typedef enum {
 	CR_HEADER_SYSTEM,
 	CR_HEADER_LOCAL,
 } cHeaderRole;
+
+// Initialize the parser state for the specified language.
+// Must be called before attempting to access the kind options.
+void cxxTagInitForLanguage(langType eLanguage);
 
 #endif //!_cxxTag_h_

@@ -17,10 +17,22 @@
 	DbusIntrospectParser, \
 	GladeParser,  \
 	Maven2Parser, \
-	SvgParser
+	PlistXMLParser, \
+	RelaxNGParser, \
+	SvgParser, \
+	XsltParser
 #else
 #define XML_PARSER_LIST
 #endif
+
+#ifdef HAVE_LIBYAML
+#define YAML_PARSER_LIST						\
+	YamlParser,									\
+	AnsiblePlaybookParser
+#else
+#define YAML_PARSER_LIST
+#endif
+
 
 /* Add the name of any new parser definition function here */
 #define PARSER_LIST \
@@ -28,6 +40,8 @@
 	AntParser, \
 	AsmParser, \
 	AspParser, \
+	AutoconfParser, \
+	AutomakeParser, \
 	AwkParser, \
 	BasicParser, \
 	BetaParser, \
@@ -35,6 +49,7 @@
 	CoffeeScriptParser, \
 	CParser, \
 	CppParser, \
+	CPreProParser, \
 	CssParser, \
 	CsharpParser, \
 	CtagsParser, \
@@ -51,14 +66,18 @@
 	GdbinitParser, \
 	GoParser, \
 	HtmlParser, \
+        IniconfParser, \
 	JavaParser, \
+	JavaPropertiesParser, \
 	JavaScriptParser, \
 	JsonParser, \
 	LispParser, \
 	LuaParser, \
 	M4Parser, \
+	ManParser, \
 	MakefileParser, \
 	MatLabParser, \
+	MyrddinParser, \
 	ObjcParser, \
 	OldCppParser, \
 	OldCParser, \
@@ -67,9 +86,13 @@
 	PerlParser, \
 	Perl6Parser, \
 	PhpParser, \
+	PodParser, \
+	ProtobufParser, \
 	PythonParser, \
+	PythonLoggingConfigParser, \
 	RParser, \
 	RexxParser, \
+	RpmSpecParser, \
 	RstParser, \
 	RubyParser, \
 	RustParser, \
@@ -78,6 +101,7 @@
 	SlangParser, \
 	SmlParser, \
 	SqlParser, \
+	SystemdUnitParser, \
 	TclParser, \
 	TexParser, \
 	TTCNParser, \
@@ -88,8 +112,7 @@
 	VimParser, \
 	WindResParser, \
 	YaccParser, \
+	YumRepoParser, \
 	ZephirParser
 
 #endif  /* CTAGS_MAIN_PARSERS_H */
-
-/* vi:set tabstop=4 shiftwidth=4: */

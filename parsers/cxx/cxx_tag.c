@@ -14,48 +14,65 @@
 #include "cxx_parser_internal.h"
 
 #include "entry.h"
-#include "get.h"
+#include "lcpp.h"
 #include "routines.h"
 #include "xtag.h"
 
+#define CXX_COMMON_MACRO_ROLES(__langPrefix)		\
+    static roleDesc __langPrefix##MacroRoles [] = {	\
+	    RoleTemplateUndef,				\
+    }
 
-static roleDesc CMacroRoles [] = {
-	RoleTemplateUndef,
+CXX_COMMON_MACRO_ROLES(C);
+CXX_COMMON_MACRO_ROLES(CXX);
+
+
+#define CXX_COMMON_HEADER_ROLES(__langPrefix)		\
+    static roleDesc __langPrefix##HeaderRoles [] = {	\
+	    RoleTemplateSystem,				\
+	    RoleTemplateLocal,				\
+    }
+
+CXX_COMMON_HEADER_ROLES(C);
+CXX_COMMON_HEADER_ROLES(CXX);
+
+
+#define CXX_COMMON_KINDS(_langPrefix, _szMemberDescription, _syncWith)	\
+	{ true,  'd', "macro",      "macro definitions", \
+			.referenceOnly = false, ATTACH_ROLES(_langPrefix##MacroRoles), .syncWith = _syncWith \
+	}, \
+	{ true,  'e', "enumerator", "enumerators (values inside an enumeration)", .syncWith = _syncWith }, \
+	{ true,  'f', "function",   "function definitions", .syncWith = _syncWith },		\
+	{ true,  'g', "enum",       "enumeration names", .syncWith = _syncWith },		\
+	{ true, 'h', "header",     "included header files", \
+			.referenceOnly = true,  ATTACH_ROLES(_langPrefix##HeaderRoles), .syncWith = _syncWith \
+	}, \
+	{ false, 'l', "local",      "local variables", .syncWith = _syncWith },   \
+	{ true,  'm', "member",     _szMemberDescription, .syncWith = _syncWith },	\
+	{ false, 'p', "prototype",  "function prototypes", .syncWith = _syncWith },		\
+	{ true,  's', "struct",     "structure names", .syncWith = _syncWith },		\
+	{ true,  't', "typedef",    "typedefs", .syncWith = _syncWith },			\
+	{ true,  'u', "union",      "union names", .syncWith = _syncWith },			\
+	{ true,  'v', "variable",   "variable definitions", .syncWith = _syncWith },		\
+	{ false, 'x', "externvar",  "external and forward variable declarations", .syncWith = _syncWith }, \
+	{ false, 'z', "parameter",  "function parameters inside function definitions", .syncWith = _syncWith }, \
+	{ false, 'L', "label",      "goto labels", .syncWith = _syncWith }
+
+static kindOption g_aCXXCKinds [] = {
+	/* All other than LANG_AUTO are ignored.
+	   LANG_IGNORE is specified as a just placeholder for the macro,
+	   and is not needed. */
+	CXX_COMMON_KINDS(C,"struct, and union members", LANG_IGNORE)
 };
 
-static roleDesc CHeaderRoles [] = {
-	RoleTemplateSystem,
-	RoleTemplateLocal,
-};
-
-static kindOption g_aCXXKinds [] = {
-	{ TRUE,  'c', "class",      "classes" },
-	{ TRUE,  'd', "macro",      "macro definitions",
-			.referenceOnly = FALSE, ATTACH_ROLES(CMacroRoles)
-	},
-	{ TRUE,  'e', "enumerator", "enumerators (values inside an enumeration)" },
-	{ TRUE,  'f', "function",   "function definitions" },
-	{ TRUE,  'g', "enum",       "enumeration names" },
-	{ FALSE, 'h', "header",     "included header files",
-			.referenceOnly = TRUE,  ATTACH_ROLES(CHeaderRoles)
-	},
-	{ FALSE, 'l', "local",      "local variables" },
-	{ TRUE,  'm', "member",     "class, struct, and union members" },
-	{ TRUE,  'n', "namespace",  "namespaces" },
-	{ FALSE, 'p', "prototype",  "function prototypes" },
-	{ TRUE,  's', "struct",     "structure names" },
-	{ TRUE,  't', "typedef",    "typedefs" },
-	{ TRUE,  'u', "union",      "union names" },
-	{ TRUE,  'v', "variable",   "variable definitions" },
-	{ FALSE, 'x', "externvar",  "external and forward variable declarations" },
-	{ FALSE, 'z', "parameter",  "function parameters inside function definitions" },
-	{ FALSE, 'L', "label",      "goto labels" },
-	// FIXME: not sure about referenceOnly: if this is referenceOnly then
-	// so is externvar and probably also prototype.
-	{ FALSE, 'N', "name",       "names imported via using scope::symbol"
-			/*, .referenceOnly = TRUE*/ },
-	{ FALSE, 'U', "using",      "using namespace statements",
-			.referenceOnly = TRUE },
+static kindOption g_aCXXCPPKinds [] = {
+	CXX_COMMON_KINDS(CXX,"class, struct, and union members", LANG_AUTO),
+	{ true,  'c', "class",      "classes" },
+	{ true,  'n', "namespace",  "namespaces" },
+	{ false, 'A', "alias",      "namespace aliases" },
+	{ false, 'N', "name",       "names imported via using scope::symbol" },
+	{ false, 'U', "using",      "using namespace statements",
+			.referenceOnly = true },
 };
 
 static const char * g_aCXXAccessStrings [] = {
@@ -65,61 +82,84 @@ static const char * g_aCXXAccessStrings [] = {
 	"protected",
 };
 
-static fieldSpec g_aCXXCPPFields [] = {
-	{
-		//.letter = 'e'
-		.name = "end",
-		.description = "end lines of various constructs",
-		.enabled = FALSE
-	},
-	{
-		//.letter = 'T', ?
-		.name = "template",
-		.description = "template parameters",
-		.enabled = FALSE,
-	},
-	{
-		//.letter = 'L', ?
-		.name = "captures",
-		.description = "lambda capture list",
-		.enabled = FALSE
-	},
-	{
-		//.letter = 'P', ?
-		.name = "properties",
-		.description = "properties (static, virtual, inline, mutable,...)",
-		.enabled = FALSE
+#define CXX_COMMON_FIELDS \
+	{ \
+		.name = "properties", \
+		.description = "properties (static, inline, mutable,...)", \
+		.enabled = false \
 	}
-};
 
 static fieldSpec g_aCXXCFields [] = {
+	CXX_COMMON_FIELDS
+};
+
+static fieldSpec g_aCXXCPPFields [] = {
+	CXX_COMMON_FIELDS,
 	{
-		//.letter = 'e'
-		.name = "end",
-		.description = "end lines of various constructs",
-		.enabled = FALSE
+		.name = "template",
+		.description = "template parameters",
+		.enabled = false,
 	},
 	{
-		//.letter = 'P', ?
-		.name = "properties",
-		.description = "properties (static, inline, mutable,...)",
-		.enabled = FALSE
+		.name = "captures",
+		.description = "lambda capture list",
+		.enabled = false
+	},
+	{
+		.name = "name",
+		.description = "aliased names",
+		.enabled = true
 	}
 };
 
-kindOption * cxxTagGetKindOptions(void)
+void cxxTagInitForLanguage(langType eLanguage)
 {
-	return g_aCXXKinds;
+	g_cxx.eLanguage = eLanguage;
+
+	if(g_cxx.eLanguage == g_cxx.eCLanguage)
+	{
+		g_cxx.pKindOptions = g_aCXXCKinds;
+		g_cxx.uKindOptionCount = sizeof(g_aCXXCKinds) / sizeof(kindOption);
+		g_cxx.pFieldOptions = g_aCXXCFields;
+		g_cxx.uFieldOptionCount = sizeof(g_aCXXCFields) / sizeof(fieldSpec);
+	} else if(g_cxx.eLanguage == g_cxx.eCPPLanguage)
+	{
+		g_cxx.pKindOptions = g_aCXXCPPKinds;
+		g_cxx.uKindOptionCount = sizeof(g_aCXXCPPKinds) / sizeof(kindOption);
+		g_cxx.pFieldOptions = g_aCXXCPPFields;
+		g_cxx.uFieldOptionCount = sizeof(g_aCXXCPPFields) / sizeof(fieldSpec);
+	} else {
+		CXX_DEBUG_ASSERT(false,"Invalid language passed to cxxTagInitForLanguage()");
+	}
 }
 
-int cxxTagGetKindOptionCount(void)
+kindOption * cxxTagGetCKindOptions(void)
 {
-	return sizeof(g_aCXXKinds) / sizeof(kindOption);
+	return g_aCXXCKinds;
 }
 
-boolean cxxTagKindEnabled(enum CXXTagKind eKindId)
+int cxxTagGetCKindOptionCount(void)
 {
-	return g_aCXXKinds[eKindId].enabled;
+	return sizeof(g_aCXXCKinds) / sizeof(kindOption);
+}
+
+kindOption * cxxTagGetCPPKindOptions(void)
+{
+	return g_aCXXCPPKinds;
+}
+
+int cxxTagGetCPPKindOptionCount(void)
+{
+	return sizeof(g_aCXXCPPKinds) / sizeof(kindOption);
+}
+
+bool cxxTagKindEnabled(unsigned int uKind)
+{
+	CXX_DEBUG_ASSERT(
+			uKind < g_cxx.uKindOptionCount,
+			"The kind must be associated to the current language!"
+		);
+	return g_cxx.pKindOptions[uKind].enabled;
 }
 
 fieldSpec * cxxTagGetCPPFieldSpecifiers(void)
@@ -132,12 +172,6 @@ int cxxTagGetCPPFieldSpecifierCount(void)
 	return sizeof(g_aCXXCPPFields) / sizeof(fieldSpec);
 }
 
-int cxxTagCPPFieldEnabled(CXXTagCPPField eField)
-{
-	return g_aCXXCPPFields[eField].enabled;
-}
-
-
 fieldSpec * cxxTagGetCFieldSpecifiers(void)
 {
 	return g_aCXXCFields;
@@ -148,36 +182,42 @@ int cxxTagGetCFieldSpecifierCount(void)
 	return sizeof(g_aCXXCFields) / sizeof(fieldSpec);
 }
 
-int cxxTagCFieldEnabled(CXXTagCField eField)
+bool cxxTagFieldEnabled(unsigned int uField)
 {
-	return g_aCXXCFields[eField].enabled;
+	CXX_DEBUG_ASSERT(
+			uField < g_cxx.uFieldOptionCount,
+			"The field must be associated to the current language!"
+		);
+	return g_cxx.pFieldOptions[uField].enabled;
 }
 
 
 static tagEntryInfo g_oCXXTag;
 
 
-tagEntryInfo * cxxTagBegin(enum CXXTagKind eKindId,CXXToken * pToken)
+tagEntryInfo * cxxTagBegin(unsigned int uKind,CXXToken * pToken)
 {
-	if(!g_aCXXKinds[eKindId].enabled)
+	kindOption * pKindOptions = g_cxx.pKindOptions;
+
+	if(!pKindOptions[uKind].enabled)
 	{
-		//CXX_DEBUG_PRINT("Tag kind %s is not enabled",g_aCXXKinds[eKindId].name);
+		//CXX_DEBUG_PRINT("Tag kind %s is not enabled",g_aCXXKinds[eKind].name);
 		return NULL;
 	}
 
 	initTagEntry(
 			&g_oCXXTag,
 			vStringValue(pToken->pszWord),
-			&(g_aCXXKinds[eKindId])
+			pKindOptions + uKind
 		);
 
 	g_oCXXTag.lineNumber = pToken->iLineNumber;
 	g_oCXXTag.filePosition = pToken->oFilePosition;
-	g_oCXXTag.isFileScope = FALSE;
+	g_oCXXTag.isFileScope = false;
 
 	if(!cxxScopeIsGlobal())
 	{
-		g_oCXXTag.extensionFields.scopeKind = &g_aCXXKinds[cxxScopeGetKind()];
+		g_oCXXTag.extensionFields.scopeKind = &(g_cxx.pKindOptions[cxxScopeGetKind()]);
 		g_oCXXTag.extensionFields.scopeName = cxxScopeGetFullName();
 	}
 
@@ -191,24 +231,18 @@ vString * cxxTagSetProperties(unsigned int uProperties)
 {
 	if(uProperties == 0)
 		return NULL;
-	
-	if(cxxParserCurrentLanguageIsCPP())
-	{
-		if(!cxxTagCPPFieldEnabled(CXXTagCPPFieldProperties))
+
+	if(!cxxTagFieldEnabled(CXXTagFieldProperties))
 			return NULL;
-	} else {
-		if(!cxxTagCFieldEnabled(CXXTagCFieldProperties))
-			return NULL;
-	}
 
 	vString * pszProperties = vStringNew();
 
-	boolean bFirst = TRUE;
+	bool bFirst = true;
 
 #define ADD_PROPERTY(_szProperty) \
 	do { \
 		if(bFirst) \
-			bFirst = FALSE; \
+			bFirst = false; \
 		else \
 			vStringPut(pszProperties,','); \
 		vStringCatS(pszProperties,_szProperty); \
@@ -244,17 +278,106 @@ vString * cxxTagSetProperties(unsigned int uProperties)
 		ADD_PROPERTY("virtual");
 	if(uProperties & CXXTagPropertyVolatile)
 		ADD_PROPERTY("volatile");
+	if(uProperties & CXXTagPropertyDeprecated)
+		ADD_PROPERTY("deprecated");
+	if(uProperties & CXXTagPropertyScopedEnum)
+		ADD_PROPERTY("scopedenum");
 
-	if(cxxParserCurrentLanguageIsCPP())
-		cxxTagSetCPPField(CXXTagCPPFieldProperties,vStringValue(pszProperties));
-	else
-		cxxTagSetCField(CXXTagCFieldProperties,vStringValue(pszProperties));
+	cxxTagSetField(CXXTagFieldProperties,vStringValue(pszProperties));
 
 	return pszProperties;
 }
 
+static bool cxxTagCheckTypeField(
+		CXXToken * pTypeStart,
+		CXXToken * pTypeEnd
+	)
+{
+	CXX_DEBUG_ENTER();
+	if(!pTypeStart || !pTypeEnd)
+	{
+		CXX_DEBUG_LEAVE_TEXT("One of the pointers is NULL");
+		return false;
+	}
+	
+	int iTotalCount = 0;
+	int iParenthesisCount = 0;
+	int iIdentifierOrKeywordCount = 0;
+	int iConsecutiveIdentifiers = 0;
+	
+	while(pTypeStart)
+	{
+		iTotalCount++;
+		if(iTotalCount > 30)
+		{
+			CXX_DEBUG_LEAVE_TEXT("The chain is really too long to be a type name");
+			return false;
+		}
 
-CXXToken * cxxTagSetTypeField(
+		if(cxxTokenTypeIs(pTypeStart,CXXTokenTypeIdentifier))
+		{
+			iConsecutiveIdentifiers++;
+			iIdentifierOrKeywordCount++;
+			if(iConsecutiveIdentifiers > 4)
+			{
+				// Probably many macros inside. Too many.
+				CXX_DEBUG_LEAVE_TEXT("Too many consecutive identifiers for a type name");
+				return false;
+			}
+		} else {
+			iConsecutiveIdentifiers = 0;
+
+			if(cxxTokenTypeIs(pTypeStart,CXXTokenTypeParenthesisChain))
+			{
+				iParenthesisCount++;
+				if(iParenthesisCount > 3)
+				{
+					CXX_DEBUG_LEAVE_TEXT("Too many non-nested parentheses for a type name");
+					return false;
+				}
+				
+				if(
+					(iTotalCount > 1) &&
+					cxxTokenTypeIs(pTypeStart->pPrev,CXXTokenTypeIdentifier) &&
+					pTypeStart != pTypeEnd &&
+					pTypeStart->pNext &&
+					cxxTokenTypeIs(pTypeStart->pNext,CXXTokenTypeIdentifier)
+				)
+				{
+					// identifier () identifier
+					// Looks suspicious, might be macros gathered by mistake
+					CXX_DEBUG_LEAVE_TEXT("Identifier-parenthesis-identifier pattern: looks suspicious");
+					return false;
+				}
+			} else if(cxxTokenTypeIs(pTypeStart,CXXTokenTypeKeyword))
+			{
+				iIdentifierOrKeywordCount++;
+			}
+		}
+
+		if(pTypeStart == pTypeEnd)
+			break;
+
+		pTypeStart = pTypeStart->pNext;
+	}
+	
+	if(iIdentifierOrKeywordCount < 1)
+	{
+		CXX_DEBUG_LEAVE_TEXT("Type does not seem to contains identifiers or keywords, can't be a type name");
+		return false;
+	}
+	
+	if(!pTypeStart)
+	{
+		CXX_DEBUG_LEAVE_TEXT("Type tokens do not belong to the same chain!");
+		return false;
+	}
+	
+	CXX_DEBUG_LEAVE();
+	return true;
+}
+
+CXXToken * cxxTagCheckAndSetTypeField(
 		CXXToken * pTypeStart,
 		CXXToken * pTypeEnd
 	)
@@ -266,6 +389,12 @@ CXXToken * cxxTagSetTypeField(
 	// "typename" is debatable since it's not really
 	// allowed by C++ for unqualified types. However I haven't been able
 	// to come up with something better... so "typename" it is for now.
+	
+	// FIXME: The typeRef forma with two fields should be dropped.
+	//        It has been created with specific use cases in mind
+	//        and we are pushing it way beyond them.
+	//        We should have a plain "type" field instead.
+	
 	static const char * szTypename = "typename";
 
 	if(pTypeStart != pTypeEnd)
@@ -286,6 +415,12 @@ CXXToken * cxxTagSetTypeField(
 		szTypeRef0 = szTypename;
 	}
 
+	if(!cxxTagCheckTypeField(pTypeStart,pTypeEnd))
+	{
+		CXX_DEBUG_PRINT("Type name looks suspicious: refusing to emit it");
+		return NULL;
+	}
+
 	cxxTokenChainNormalizeTypeNameSpacingInRange(pTypeStart,pTypeEnd);
 	CXXToken * pTypeName = cxxTokenChainExtractRange(pTypeStart,pTypeEnd,0);
 
@@ -297,54 +432,46 @@ CXXToken * cxxTagSetTypeField(
 	return pTypeName;
 }
 
-void cxxTagSetCPPField(CXXTagCPPField eField,const char * szValue)
+void cxxTagSetField(unsigned int uField,const char * szValue)
 {
-	if(!g_aCXXCPPFields[eField].enabled)
+	CXX_DEBUG_ASSERT(
+			uField < g_cxx.uFieldOptionCount,
+			"The field must be associated to the current language!"
+		);
+
+	if(!g_cxx.pFieldOptions[uField].enabled)
 		return;
-	
-	attachParserField(&g_oCXXTag,g_aCXXCPPFields[eField].ftype,szValue);
+
+	attachParserField(&g_oCXXTag,g_cxx.pFieldOptions[uField].ftype,szValue);
 }
 
-void cxxTagSetCorkQueueCPPField(
+void cxxTagSetCorkQueueField(
 		int iIndex,
-		CXXTagCPPField eField,
+		unsigned int uField,
 		const char * szValue
 	)
 {
-	CXX_DEBUG_ASSERT(g_aCXXCPPFields[eField].enabled,"The field must be enabled!");
+	CXX_DEBUG_ASSERT(
+			uField < g_cxx.uFieldOptionCount,
+			"The field must be associated to the current language!"
+		);
 
-	attachParserFieldToCorkEntry(iIndex,g_aCXXCPPFields[eField].ftype,szValue);
-}
+	CXX_DEBUG_ASSERT(g_cxx.pFieldOptions[uField].enabled,"The field must be enabled!");
 
-void cxxTagSetCField(CXXTagCField eField,const char * szValue)
-{
-	if(!g_aCXXCFields[eField].enabled)
-		return;
-	
-	attachParserField(&g_oCXXTag,g_aCXXCFields[eField].ftype,szValue);
-}
-
-void cxxTagSetCorkQueueCField(
-		int iIndex,
-		CXXTagCField eField,
-		const char * szValue
-	)
-{
-	CXX_DEBUG_ASSERT(g_aCXXCFields[eField].enabled,"The field must be enabled!");
-
-	attachParserFieldToCorkEntry(iIndex,g_aCXXCFields[eField].ftype,szValue);
+	attachParserFieldToCorkEntry(iIndex,g_cxx.pFieldOptions[uField].ftype,szValue);
 }
 
 int cxxTagCommit(void)
 {
 	if(g_oCXXTag.isFileScope)
 	{
-		if (isXtagEnabled(XTAG_FILE_SCOPE))
-			markTagExtraBit (&g_oCXXTag, XTAG_FILE_SCOPE);
-		else
-			return SCOPE_NIL; // FIXME: why the "invalid" cork queue index is SCOPE_NIL?
+		if(!isXtagEnabled(XTAG_FILE_SCOPE))
+			return CORK_NIL;
+
+		markTagExtraBit(&g_oCXXTag,XTAG_FILE_SCOPE);
 	}
 
+#ifdef CXX_DO_DEBUGGING
 	CXX_DEBUG_PRINT(
 			"Emitting tag for symbol '%s', kind '%s', line %d",
 			g_oCXXTag.name,
@@ -360,14 +487,15 @@ int cxxTagCommit(void)
 				g_oCXXTag.extensionFields.typeRef[0],
 				g_oCXXTag.extensionFields.typeRef[1]
 			);
+#endif
 
 	int iCorkQueueIndex = makeTagEntry(&g_oCXXTag);
 
 	// Handle --extra=+q
 	if(!isXtagEnabled(XTAG_QUALIFIED_TAGS))
 		return iCorkQueueIndex;
-	else
-		markTagExtraBit (&g_oCXXTag, XTAG_QUALIFIED_TAGS);
+
+	markTagExtraBit(&g_oCXXTag,XTAG_QUALIFIED_TAGS);
 
 	if(!g_oCXXTag.extensionFields.scopeName)
 		return iCorkQueueIndex;
@@ -375,9 +503,9 @@ int cxxTagCommit(void)
 	// WARNING: The following code assumes that the scope
 	// didn't change between cxxTagBegin() and cxxTagCommit().
 
-	enum CXXTagKind eScopeKind = cxxScopeGetKind();
+	enum CXXScopeType eScopeType = cxxScopeGetType();
 
-	if(eScopeKind == CXXTagKindFUNCTION)
+	if(eScopeType == CXXScopeTypeFunction)
 	{
 		// old ctags didn't do this, and --extra=+q is mainly
 		// for backward compatibility so...
@@ -388,7 +516,7 @@ int cxxTagCommit(void)
 
 	vString * x;
 
-	if(eScopeKind == CXXTagKindENUM)
+	if(eScopeType == CXXScopeTypeEnum)
 	{
 		// If the scope kind is enumeration then we need to remove the
 		// last scope part. This is what old ctags did.
@@ -420,8 +548,8 @@ int cxxTagCommit(void)
 	return iCorkQueueIndex;
 }
 
-void cxxTag(enum CXXTagKind eKindId,CXXToken * pToken)
+void cxxTag(unsigned int uKind,CXXToken * pToken)
 {
-	if(cxxTagBegin(eKindId,pToken) != NULL)
+	if(cxxTagBegin(uKind,pToken) != NULL)
 		cxxTagCommit();
 }

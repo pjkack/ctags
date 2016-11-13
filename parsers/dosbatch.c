@@ -17,7 +17,7 @@
 #include "routines.h"
 #include "selectors.h"
 
-static const tagRegexTable const dosTagRegexTable [] = {
+static tagRegexTable dosTagRegexTable [] = {
 	{"^:([A-Za-z_0-9]+)", "\\1",
 	 "l,label,labels", NULL},
 	{"set[ \t]+([A-Za-z_0-9]+)[ \t]*=", "\\1",
@@ -42,5 +42,3 @@ extern parserDefinition* DosBatchParser (void)
 	def->selectLanguage = selectors;
 	return def;
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */

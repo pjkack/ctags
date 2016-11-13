@@ -42,22 +42,22 @@ typedef enum {
 } maven2ArtifactIdRole;
 
 static roleDesc Maven2GroupIdRoles [] = {
-	{ TRUE, "parent", "parent" },
-	{ TRUE, "dependency", "dependency" },
+	{ true, "parent", "parent" },
+	{ true, "dependency", "dependency" },
 };
 
 static roleDesc Maven2ArtifactIdRoles [] = {
-	{ TRUE, "parent", "parent" },
-	{ TRUE, "dependency", "dependency" },
+	{ true, "parent", "parent" },
+	{ true, "dependency", "dependency" },
 };
 
 static kindOption Maven2Kinds [] = {
-	{ TRUE,  'g', "groupId",    "group identifiers",
-	  .referenceOnly = FALSE, ATTACH_ROLES (Maven2GroupIdRoles) },
-	{ TRUE,  'a', "artifactId", "artifact identifiers",
-	  .referenceOnly = FALSE, ATTACH_ROLES (Maven2ArtifactIdRoles) },
-	{ TRUE,  'p', "property",   "properties" },
-	{ TRUE,  'r', "repositoryId", "repository identifiers" },
+	{ true,  'g', "groupId",    "group identifiers",
+	  .referenceOnly = false, ATTACH_ROLES (Maven2GroupIdRoles) },
+	{ true,  'a', "artifactId", "artifact identifiers",
+	  .referenceOnly = false, ATTACH_ROLES (Maven2ArtifactIdRoles) },
+	{ true,  'p', "property",   "properties" },
+	{ true,  'r', "repositoryId", "repository identifiers" },
 };
 
 static void makeTagWithScope (xmlNode *node,
@@ -65,21 +65,15 @@ static void makeTagWithScope (xmlNode *node,
 			      struct sTagEntryInfo *tag,
 			      void *userData);
 
-static void makeTagForParent (xmlNode *node,
-			      const struct sTagXpathRecurSpec *spec __unused__,
-			      xmlXPathContext *ctx __unused__,
-			      void *userData __unused__);
-
-static void makeTagForDependency (xmlNode *node,
-				  const struct sTagXpathRecurSpec *spec __unused__,
-				  xmlXPathContext *ctx __unused__,
-				  void *userData __unused__);
-
+static void makeTagRecursively (xmlNode *node,
+				const struct sTagXpathRecurSpec *spec,
+				xmlXPathContext *ctx,
+				void *userData);
 
 static void makeTagForProperties (xmlNode *node,
-				  const struct sTagXpathRecurSpec *spec __unused__,
-				  xmlXPathContext *ctx __unused__,
-				  void *userData __unused__)
+				  const struct sTagXpathRecurSpec *spec CTAGS_ATTR_UNUSED,
+				  xmlXPathContext *ctx CTAGS_ATTR_UNUSED,
+				  void *userData CTAGS_ATTR_UNUSED)
 {
 	const xmlChar* str;
 	tagEntryInfo tag;
@@ -92,6 +86,13 @@ static void makeTagForProperties (xmlNode *node,
 	makeTagEntry (&tag);
 }
 
+
+enum maven2XpathTable {
+	TABLE_MAIN,
+	TABLE_PARENT,
+	TABLE_DEPEDENCY,
+};
+
 static tagXpathTable maven2XpathMainTable[] = {
 	{ "/*[local-name()='project']/*[local-name()='groupId']",
 	  LXPATH_TABLE_DO_MAKE,
@@ -100,11 +101,11 @@ static tagXpathTable maven2XpathMainTable[] = {
 	},
 	{ "/*[local-name()='project']/*[local-name()='parent']",
 	  LXPATH_TABLE_DO_RECUR,
-	  { .recurSpec = { makeTagForParent } }
+	  { .recurSpec = { makeTagRecursively, TABLE_PARENT } }
 	},
 	{ "/*[local-name()='project']/*[local-name()='dependencies']/*[local-name()='dependency']",
 	  LXPATH_TABLE_DO_RECUR,
-	  { .recurSpec = { makeTagForDependency } }
+	  { .recurSpec = { makeTagRecursively, TABLE_DEPEDENCY } }
 	},
 	{ "/*[local-name()='project']/*[local-name()='artifactId']",
 	  LXPATH_TABLE_DO_MAKE,
@@ -147,12 +148,6 @@ static tagXpathTable maven2XpathDependencyTable[] = {
 	},
 };
 
-enum maven2XpathTable {
-	TABLE_MAIN,
-	TABLE_PARENT,
-	TABLE_DEPEDENCY,
-};
-
 static tagXpathTableTable maven2XpathTableTable[] = {
 	[TABLE_MAIN] = { ARRAY_AND_SIZE(maven2XpathMainTable) },
 	[TABLE_PARENT] = { ARRAY_AND_SIZE(maven2XpathParentTable) },
@@ -167,7 +162,7 @@ static fieldSpec Maven2Fields [] = {
 	{
 		.name = "version",
 		.description = "version of artifact",
-		.enabled = FALSE,
+		.enabled = false,
 	}
 };
 
@@ -218,8 +213,8 @@ findMaven2TagsForTable (enum maven2XpathTable tindex,
 			xmlXPathContext *ctx)
 {
 	int corkIndexes [] = {
-		[K_GROUP_ID]    = SCOPE_NIL,
-		[K_ARTIFACT_ID] = SCOPE_NIL,
+		[K_GROUP_ID]    = CORK_NIL,
+		[K_ARTIFACT_ID] = CORK_NIL,
 	};
 
 	findXMLTags (ctx, node,
@@ -227,28 +222,20 @@ findMaven2TagsForTable (enum maven2XpathTable tindex,
 		     Maven2Kinds,
 		     &corkIndexes);
 
-	if ( corkIndexes [K_ARTIFACT_ID] != SCOPE_NIL
-	     && corkIndexes [K_GROUP_ID] != SCOPE_NIL)
+	if ( corkIndexes [K_ARTIFACT_ID] != CORK_NIL
+	     && corkIndexes [K_GROUP_ID] != CORK_NIL)
 	{
 		tagEntryInfo *tag = getEntryInCorkQueue (corkIndexes [K_ARTIFACT_ID]);
 		tag->extensionFields.scopeIndex = corkIndexes [K_GROUP_ID];
 	}
 }
 
-static void makeTagForParent (xmlNode *node,
-				  const struct sTagXpathRecurSpec *spec __unused__,
-				  xmlXPathContext *ctx __unused__,
-				  void *userData __unused__)
+static void makeTagRecursively (xmlNode *node,
+				  const struct sTagXpathRecurSpec *spec,
+				  xmlXPathContext *ctx,
+				  void *userData CTAGS_ATTR_UNUSED)
 {
-	findMaven2TagsForTable (TABLE_PARENT, node, ctx);
-}
-
-static void makeTagForDependency (xmlNode *node,
-				  const struct sTagXpathRecurSpec *spec __unused__,
-				  xmlXPathContext *ctx __unused__,
-				  void *userData __unused__)
-{
-	findMaven2TagsForTable (TABLE_DEPEDENCY, node, ctx);
+	findMaven2TagsForTable (spec->nextTable, node, ctx);
 }
 
 static void
@@ -272,11 +259,9 @@ Maven2Parser (void)
 	def->parser        = findMaven2Tags;
 	def->tagXpathTableTable  = maven2XpathTableTable;
 	def->tagXpathTableCount  = ARRAY_SIZE (maven2XpathTableTable);
-	def->useCork = TRUE;
+	def->useCork = true;
 	def->selectLanguage = selectors;
 	def->fieldSpecs = Maven2Fields;
 	def->fieldSpecCount = ARRAY_SIZE (Maven2Fields);
 	return def;
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */

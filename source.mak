@@ -8,56 +8,76 @@ REPOINFO_HEADS = main/repoinfo.h
 REPOINFO_SRCS  = main/repoinfo.c
 REPOINFO_OBJS  = $(REPOINFO_SRCS:.c=.$(OBJEXT))
 
+MIO_HEADS = main/mio.h
+MIO_SRCS  = main/mio.c
+
 MAIN_HEADS =			\
 	main/args.h		\
 	main/ctags.h		\
+	main/dependency.h	\
 	main/entry.h		\
+	main/error.h		\
 	main/field.h		\
 	main/flags.h		\
 	main/fmt.h		\
+	main/gcc-attr.h		\
 	main/general.h		\
-	main/get.h		\
 	main/htable.h		\
 	main/keyword.h		\
 	main/kind.h		\
+	main/lcpp.h		\
 	main/main.h		\
 	main/mbcs.h		\
-	main/mio.h		\
 	main/nestlevel.h	\
+	main/objpool.h		\
 	main/options.h		\
+	main/output.h		\
 	main/parse.h		\
 	main/parsers.h		\
 	main/pcoproc.h		\
+	main/promise.h		\
 	main/ptag.h		\
+	main/ptrarray.h		\
 	main/read.h		\
 	main/routines.h		\
 	main/selectors.h	\
 	main/sort.h		\
 	main/strlist.h		\
+	main/types.h		\
 	main/vstring.h		\
-	main/xtag.h
+	main/xtag.h		\
+	\
+	$(MIO_HEADS)
 
 MAIN_SRCS =				\
 	main/args.c			\
+	main/dependency.c		\
 	main/entry.c			\
+	main/error.c			\
 	main/field.c			\
 	main/flags.c			\
 	main/fmt.c			\
-	main/get.c			\
 	main/htable.c			\
 	main/keyword.c			\
 	main/kind.c			\
+	main/lcpp.c			\
 	main/lregex.c			\
 	main/lxcmd.c			\
 	main/lxpath.c			\
 	main/main.c			\
 	main/mbcs.c			\
-	main/mio.c			\
 	main/nestlevel.c		\
+	main/objpool.c			\
 	main/options.c			\
+	main/output-etags.c		\
+	main/output-ctags.c		\
+	main/output-json.c		\
+	main/output-xref.c		\
 	main/parse.c			\
 	main/pcoproc.c			\
+	main/promise.c			\
 	main/ptag.c			\
+	main/ptrarray.c			\
 	main/read.c			\
 	main/routines.c			\
 	main/selectors.c		\
@@ -67,6 +87,7 @@ MAIN_SRCS =				\
 	main/xtag.c			\
 	\
 	$(REPOINFO_SRCS) \
+	$(MIO_SRCS)      \
 	\
 	$(NULL)
 
@@ -81,13 +102,21 @@ PARSER_HEADS = \
 	parsers/cxx/cxx_scope.h \
 	parsers/cxx/cxx_tag.h \
 	parsers/cxx/cxx_token.h \
-	parsers/cxx/cxx_token_chain.h
-	
+	parsers/cxx/cxx_token_chain.h \
+	\
+	parsers/meta-iniconf.h \
+	parsers/meta-m4.h \
+	parsers/meta-make.h \
+	\
+	$(NULL)
+
 PARSER_SRCS =				\
 	parsers/ada.c			\
 	parsers/ant.c			\
 	parsers/asm.c			\
 	parsers/asp.c			\
+	parsers/autoconf.c		\
+	parsers/automake.c		\
 	parsers/awk.c			\
 	parsers/basic.c			\
 	parsers/beta.c			\
@@ -122,21 +151,28 @@ PARSER_SRCS =				\
 	parsers/fortran.c		\
 	parsers/go.c			\
 	parsers/html.c			\
+	parsers/iniconf.c		\
+	parsers/jprop.c			\
 	parsers/jscript.c		\
 	parsers/json.c			\
 	parsers/lisp.c			\
 	parsers/lua.c			\
+	parsers/m4.c			\
 	parsers/make.c			\
 	parsers/matlab.c		\
+	parsers/myrddin.c		\
 	parsers/objc.c			\
 	parsers/ocaml.c			\
 	parsers/pascal.c		\
 	parsers/perl.c			\
 	parsers/perl6.c			\
 	parsers/php.c			\
+	parsers/protobuf.c		\
 	parsers/python.c		\
+	parsers/pythonloggingconfig.c	\
 	parsers/r.c			\
 	parsers/rexx.c			\
+	parsers/rpmspec.c		\
 	parsers/rst.c			\
 	parsers/ruby.c			\
 	parsers/rust.c			\
@@ -145,6 +181,7 @@ PARSER_SRCS =				\
 	parsers/slang.c			\
 	parsers/sml.c			\
 	parsers/sql.c			\
+	parsers/systemdunit.c		\
 	parsers/tcl.c			\
 	parsers/tex.c			\
 	parsers/ttcn.c			\
@@ -153,6 +190,7 @@ PARSER_SRCS =				\
 	parsers/vim.c			\
 	parsers/windres.c		\
 	parsers/yacc.c			\
+	parsers/yumrepo.c		\
 	\
 	$(TRANSLATED_SRCS)		\
 	\
@@ -164,8 +202,19 @@ XML_SRCS = \
 	 parsers/dbusintrospect.c	\
 	 parsers/glade.c		\
 	 parsers/svg.c			\
+	 parsers/plist.c		\
+	 parsers/relaxng.c		\
+	 parsers/xslt.c			\
 	 \
 	 $(NULL)
+
+YAML_HEAD = parsers/meta-yaml.h
+YAML_SRCS = \
+	  parsers/yaml.c		\
+	  \
+	  parsers/ansibleplaybook.c	\
+	  \
+	  $(NULL)
 
 DEBUG_HEADS = main/debug.h
 DEBUG_SRCS = main/debug.c
@@ -184,14 +233,33 @@ FNMATCH_HEADS = fnmatch/fnmatch.h
 FNMATCH_SRCS = fnmatch/fnmatch.c
 FNMATCH_OBJS = $(FNMATCH_SRCS:.c=.$(OBJEXT))
 
-QUALIFIER_HEAD = dsl/es-lang-c-stdc99.h \
-		 dsl/qualifier.h
+QUALIFIER_HEADS = dsl/es-lang-c-stdc99.h \
+		 dsl/qualifier.h \
+		 \
+		 $(MIO_HEADS) \
+		 \
+		 $(NULL)
+
 QUALIFIER_SRCS = dsl/es-lang-c-stdc99.c \
-		 dsl/qualifier.c
+		 dsl/qualifier.c \
+		 \
+		 $(MIO_SRCS) \
+		 \
+		 $(NULL)
+
 QUALIFIER_OBJS = $(QUALIFIER_SRCS:.c=.$(OBJEXT))
 
 ALL_OBJS = \
 	$(ALL_SRCS:.c=.$(OBJEXT)) \
 	$(LIBOBJS)
+
+
+READTAGS_SRCS  = \
+	       read/readtags.c      \
+	       read/readtags-cmd.c  \
+	       \
+	       $(NULL)
+READTAGS_HEADS = read/readtags.h
+READTAGS_OBJS  = $(READTAGS_SRCS:.c=.$(OBJEXT))
 
 # vim: ts=8

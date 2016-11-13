@@ -18,11 +18,23 @@
  *
  */
 
+#ifndef QUALIFIER
 #include "general.h"  /* must always come first */
 
-#include "mio.h"
 #include "routines.h"
 #include "debug.h"
+#else
+
+#if defined (HAVE_CONFIG_H)
+#include <config.h>
+#endif
+
+#ifdef USE_STDBOOL_H
+#include <stdbool.h>
+#endif
+#endif
+
+#include "mio.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -30,6 +42,63 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <limits.h>
+
+#ifdef QUALIFIER
+#define xMalloc(n,Type)    (Type *)eMalloc((size_t)(n) * sizeof (Type))
+#define xCalloc(n,Type)    (Type *)eCalloc((size_t)(n), sizeof (Type))
+#define xRealloc(p,n,Type) (Type *)eRealloc((p), (n) * sizeof (Type))
+
+extern void *eMalloc (const size_t size)
+{
+	void *buffer = malloc (size);
+
+	if (buffer == NULL)
+	{
+		fprintf(stderr, "out of memory");
+		abort ();
+	}
+
+	return buffer;
+}
+
+extern void *eCalloc (const size_t count, const size_t size)
+{
+	void *buffer = calloc (count, size);
+
+	if (buffer == NULL)
+	{
+		fprintf(stderr, "out of memory");
+		abort ();
+	}
+
+	return buffer;
+}
+
+extern void *eRealloc (void *const ptr, const size_t size)
+{
+	void *buffer;
+	if (ptr == NULL)
+		buffer = eMalloc (size);
+	else
+	{
+		buffer = realloc (ptr, size);
+		if (buffer == NULL)
+		{
+			fprintf(stderr, "out of memory");
+			abort ();
+		}
+	}
+	return buffer;
+}
+
+extern void eFree (void *const ptr)
+{
+	free (ptr);
+}
+
+#  define Assert(c)
+#  define AssertNotReached()
+#endif
 
 /* minimal reallocation chunk size */
 #define MIO_CHUNK_SIZE 4096
@@ -47,8 +116,11 @@
  * of an application that uses C file I/O API to perform in-memory operations.
  *
  * A #MIO object is created using mio_new_file(), mio_new_memory() or mio_new_mio(),
- * depending on whether you want file or in-memory operations, and destroyed using
- * mio_free(). There is also some other convenient API to create file-based
+ * depending on whether you want file or in-memory operations.
+ * Its life is managed by reference counting. Just after calling one of functions
+ * for creating, the count is 1. mio_ref() increments the counter. mio_free()
+ * decrements it. When the counter becomes 0, the #MIO object will be destroyed
+ * in mio_free(). There is also some other convenient API to create file-based
  * #MIO objects for more complex cases, such as mio_new_file_full() and
  * mio_new_fp().
  *
@@ -60,6 +132,43 @@
  * with the significant difference that the first parameter is always the #MIO
  * object to work on.
  */
+
+
+typedef struct _MIOUserData MIOUserData;
+struct _MIOUserData {
+	void *d;
+	MIODestroyNotify f;
+};
+
+/**
+ * MIO:
+ *
+ * An object representing a #MIO stream. No assumptions should be made about
+ * what compose this object, and none of its fields should be accessed directly.
+ */
+struct _MIO {
+	/*< private >*/
+	MIOType type;
+	unsigned int refcount;
+	union {
+		struct {
+			FILE *fp;
+			MIOFCloseFunc close_func;
+		} file;
+		struct {
+			unsigned char *buf;
+			int ungetch;
+			size_t pos;
+			size_t size;
+			size_t allocated_size;
+			MIOReallocFunc realloc_func;
+			MIODestroyNotify free_func;
+			bool error;
+			bool eof;
+		} mem;
+	} impl;
+	MIOUserData udata;
+};
 
 
 /**
@@ -112,6 +221,9 @@ MIO *mio_new_file_full (const char *filename,
 			mio->type = MIO_TYPE_FILE;
 			mio->impl.file.fp = fp;
 			mio->impl.file.close_func = close_func;
+			mio->refcount = 1;
+			mio->udata.d = NULL;
+			mio->udata.f = NULL;
 		}
 	}
 
@@ -170,6 +282,9 @@ MIO *mio_new_fp (FILE *fp, MIOFCloseFunc close_func)
 		mio->type = MIO_TYPE_FILE;
 		mio->impl.file.fp = fp;
 		mio->impl.file.close_func = close_func;
+		mio->refcount = 1;
+		mio->udata.d = NULL;
+		mio->udata.f = NULL;
 	}
 
 	return mio;
@@ -229,8 +344,11 @@ MIO *mio_new_memory (unsigned char *data,
 		mio->impl.mem.allocated_size = size;
 		mio->impl.mem.realloc_func = realloc_func;
 		mio->impl.mem.free_func = free_func;
-		mio->impl.mem.eof = FALSE;
-		mio->impl.mem.error = FALSE;
+		mio->impl.mem.eof = false;
+		mio->impl.mem.error = false;
+		mio->refcount = 1;
+		mio->udata.d = NULL;
+		mio->udata.f = NULL;
 	}
 
 	return mio;
@@ -298,6 +416,20 @@ cleanup:
 }
 
 /**
+ * mio_ref:
+ * @mio: A #MIO object
+ *
+ * Increments the reference counter of a #MIO.
+ *
+ * Returns: passed @mio.
+ */
+MIO *mio_ref        (MIO *mio)
+{
+	mio->refcount++;
+	return mio;
+}
+
+/**
  * mio_file_get_fp:
  * @mio: A #MIO object
  *
@@ -353,7 +485,8 @@ unsigned char *mio_memory_get_data (MIO *mio, size_t *size)
  * mio_free:
  * @mio: A #MIO object
  *
- * Destroys a #MIO object.
+ * Decrements the reference counter of a #MIO and destroys the #MIO
+ * object if its counter becomes 0.
  *
  * Returns: Error code obtained from the registered MIOFCloseFunc or 0 on success.
  */
@@ -363,6 +496,12 @@ int mio_free (MIO *mio)
 
 	if (mio)
 	{
+		if (--mio->refcount)
+			return 0;
+
+		if (mio->udata.d && mio->udata.f)
+			mio->udata.f (mio->udata.d);
+
 		if (mio->type == MIO_TYPE_FILE)
 		{
 			if (mio->impl.file.close_func)
@@ -380,8 +519,8 @@ int mio_free (MIO *mio)
 			mio->impl.mem.allocated_size = 0;
 			mio->impl.mem.realloc_func = NULL;
 			mio->impl.mem.free_func = NULL;
-			mio->impl.mem.eof = FALSE;
-			mio->impl.mem.error = FALSE;
+			mio->impl.mem.eof = false;
+			mio->impl.mem.error = false;
 		}
 		else
 			AssertNotReached ();
@@ -444,7 +583,7 @@ size_t mio_read (MIO *mio,
 				mio->impl.mem.pos += copy_bytes;
 			}
 			if (mio->impl.mem.pos >= mio->impl.mem.size)
-				mio->impl.mem.eof = TRUE;
+				mio->impl.mem.eof = true;
 		}
 
 		return n_read;
@@ -464,11 +603,11 @@ size_t mio_read (MIO *mio,
  * Tries to resize the underlying buffer of an in-memory #MIO object.
  * This supports both growing and shrinking.
  *
- * Returns: %TRUE on success, %FALSE otherwise.
+ * Returns: %true on success, %false otherwise.
  */
 static int mem_try_resize (MIO *mio, size_t new_size)
 {
-	int success = FALSE;
+	int success = false;
 
 	if (mio->impl.mem.realloc_func)
 	{
@@ -485,7 +624,7 @@ static int mem_try_resize (MIO *mio, size_t new_size)
 				if (new_size <= mio->impl.mem.allocated_size)
 				{
 					mio->impl.mem.size = new_size;
-					success = TRUE;
+					success = true;
 				}
 				else
 				{
@@ -500,7 +639,7 @@ static int mem_try_resize (MIO *mio, size_t new_size)
 						mio->impl.mem.buf = newbuf;
 						mio->impl.mem.allocated_size = newsize;
 						mio->impl.mem.size = new_size;
-						success = TRUE;
+						success = true;
 					}
 				}
 			}
@@ -514,7 +653,7 @@ static int mem_try_resize (MIO *mio, size_t new_size)
 					mio->impl.mem.buf = newbuf;
 					mio->impl.mem.allocated_size = new_size;
 					mio->impl.mem.size = new_size;
-					success = TRUE;
+					success = true;
 				}
 			}
 		}
@@ -531,11 +670,11 @@ static int mem_try_resize (MIO *mio, size_t new_size)
  * Tries to ensure there is enough space for @n bytes to be written from the
  * current cursor position.
  *
- * Returns: %TRUE if there is enough space, %FALSE otherwise.
+ * Returns: %true if there is enough space, %false otherwise.
  */
 static int mem_try_ensure_space (MIO *mio, size_t n)
 {
-	int success = TRUE;
+	int success = true;
 
 	if (mio->impl.mem.pos + n > mio->impl.mem.size)
 		success = mem_try_resize (mio, mio->impl.mem.pos + n);
@@ -677,13 +816,13 @@ int mio_vprintf (MIO *mio, const char *format, va_list ap)
 		size_t old_pos;
 		size_t old_size;
 		va_list ap_copy;
-		char c;
+		char dummy;
 
 		old_pos = mio->impl.mem.pos;
 		old_size = mio->impl.mem.size;
 		va_copy (ap_copy, ap);
 		/* compute the size we will need into the buffer */
-		n = vsnprintf (&c, 1, format, ap_copy);
+		n = vsnprintf (&dummy, 1, format, ap_copy);
 		va_end (ap_copy);
 		if (mem_try_ensure_space (mio, n))
 		{
@@ -770,7 +909,7 @@ int mio_getc (MIO *mio)
 			mio->impl.mem.pos++;
 		}
 		else
-			mio->impl.mem.eof = TRUE;
+			mio->impl.mem.eof = true;
 
 		return rv;
 	}
@@ -809,7 +948,7 @@ int mio_ungetc (MIO *mio, int ch)
 		{
 			rv = mio->impl.mem.ungetch = ch;
 			mio->impl.mem.pos--;
-			mio->impl.mem.eof = FALSE;
+			mio->impl.mem.eof = false;
 		}
 
 		return rv;
@@ -844,21 +983,28 @@ char *mio_gets (MIO *mio, char *s, size_t size)
 		if (size > 0)
 		{
 			size_t i = 0;
+			bool newline = false;
+			/* Avoiding dereference inside the for loop below improves
+			 * performance so we do it here. */
+			size_t pos = mio->impl.mem.pos;
+			size_t buf_size = mio->impl.mem.size;
+			unsigned char *buf = mio->impl.mem.buf;
 
 			if (mio->impl.mem.ungetch != EOF)
 			{
 				s[i] = (char)mio->impl.mem.ungetch;
 				mio->impl.mem.ungetch = EOF;
-				mio->impl.mem.pos++;
+				pos++;
 				i++;
 			}
-			for (; mio->impl.mem.pos < mio->impl.mem.size && i < (size - 1); i++)
+			for (; pos < buf_size && i < (size - 1); i++)
 			{
-				s[i] = (char)mio->impl.mem.buf[mio->impl.mem.pos];
-				mio->impl.mem.pos++;
+				s[i] = (char)buf[pos];
+				pos++;
 				if (s[i] == '\n')
 				{
 					i++;
+					newline = true;
 					break;
 				}
 			}
@@ -867,8 +1013,10 @@ char *mio_gets (MIO *mio, char *s, size_t size)
 				s[i] = 0;
 				rv = s;
 			}
-			if (mio->impl.mem.pos >= mio->impl.mem.size)
-				mio->impl.mem.eof = TRUE;
+			if (!newline && pos >= buf_size)
+				mio->impl.mem.eof = true;
+			mio->impl.mem.pos = pos;
+			mio->impl.mem.size = buf_size;
 		}
 
 		return rv;
@@ -893,8 +1041,8 @@ void mio_clearerr (MIO *mio)
 		clearerr (mio->impl.file.fp);
 	else if (mio->type == MIO_TYPE_MEMORY)
 	{
-		mio->impl.mem.error = FALSE;
-		mio->impl.mem.eof = FALSE;
+		mio->impl.mem.error = false;
+		mio->impl.mem.eof = false;
 	}
 	else
 		AssertNotReached ();
@@ -914,7 +1062,7 @@ int mio_eof (MIO *mio)
 	if (mio->type == MIO_TYPE_FILE)
 		return feof (mio->impl.file.fp);
 	else if (mio->type == MIO_TYPE_MEMORY)
-		return mio->impl.mem.eof != FALSE;
+		return mio->impl.mem.eof != false;
 	else
 	{
 		AssertNotReached ();
@@ -936,7 +1084,7 @@ int mio_error (MIO *mio)
 	if (mio->type == MIO_TYPE_FILE)
 		return ferror (mio->impl.file.fp);
 	else if (mio->type == MIO_TYPE_MEMORY)
-		return mio->impl.mem.error != FALSE;
+		return mio->impl.mem.error != false;
 	else
 	{
 		AssertNotReached ();
@@ -1007,7 +1155,7 @@ int mio_seek (MIO *mio, long offset, int whence)
 		}
 		if (rv == 0)
 		{
-			mio->impl.mem.eof = FALSE;
+			mio->impl.mem.eof = false;
 			mio->impl.mem.ungetch = EOF;
 		}
 
@@ -1073,8 +1221,8 @@ void mio_rewind (MIO *mio)
 	{
 		mio->impl.mem.pos = 0;
 		mio->impl.mem.ungetch = EOF;
-		mio->impl.mem.eof = FALSE;
-		mio->impl.mem.error = FALSE;
+		mio->impl.mem.eof = false;
+		mio->impl.mem.error = false;
 	}
 	else
 		AssertNotReached ();
@@ -1197,4 +1345,39 @@ int mio_flush (MIO *mio)
 	if (mio->type == MIO_TYPE_FILE)
 		return fflush (mio->impl.file.fp);
 	return 0;
+}
+
+
+/**
+ * mio_attach_user_data:
+ * @mio: A #MIO object
+ * @user_data: a pointer to any data object
+ * @user_data_free_func: a call back function to destroy the data object passed as @user_data
+ *
+ * Attach any data object to a #MIO object. Attached data can be got with
+ * mio_get_user_data(). The attached data is destroyed when new data is attached to
+ * the #MIO object, or #the MIO object itself is destroyed. For destroying the data
+ * @user_data_free_func is used.
+ *
+ */
+
+void  mio_attach_user_data (MIO *mio, void *user_data, MIODestroyNotify user_data_free_func)
+{
+	if (mio->udata.d && mio->udata.f)
+		mio->udata.f (mio->udata.d);
+
+	mio->udata.d = user_data;
+	mio->udata.f = user_data_free_func;
+}
+
+/**
+ * mio_get_user_data:
+ * @mio: A #MIO object
+ *
+ * Returns: user data attached with mio_attach_user_data() to a #MIO object.
+ *
+ */
+void *mio_get_user_data (MIO *mio)
+{
+	return mio->udata.d;
 }

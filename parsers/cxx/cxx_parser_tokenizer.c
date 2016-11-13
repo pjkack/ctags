@@ -16,12 +16,15 @@
 
 #include "parse.h"
 #include "vstring.h"
-#include "get.h"
+#include "lcpp.h"
 #include "debug.h"
 #include "keyword.h"
 #include "read.h"
 #include "options.h"
 
+#include <string.h>
+
+#define UINFO(c) (((c) < 0x80 && (c) >= 0) ? g_aCharTable[c].uType : 0)
 
 static void cxxParserSkipToNonWhiteSpace(void)
 {
@@ -864,16 +867,167 @@ static CXXCharTypeData g_aCharTable[128] =
 	{ 0, 0, 0 }
 };
 
-boolean cxxParserParseNextToken(void)
+// The __attribute__((...)) sequence complicates parsing quite a lot.
+// For this reason we attempt to "hide" it from the rest of the parser
+// at tokenizer level.
+static bool cxxParserParseNextTokenCondenseAttribute(void)
+{
+	CXX_DEBUG_ENTER();
+
+	CXX_DEBUG_ASSERT(
+			cxxTokenIsKeyword(g_cxx.pToken,CXXKeyword__ATTRIBUTE__),
+			"This function should be called only after we have parsed __attribute__"
+		);
+
+	// Kill it
+	cxxTokenDestroy(cxxTokenChainTakeLast(g_cxx.pTokenChain));
+
+	// And go ahead.
+
+	if(!cxxParserParseNextToken())
+	{
+		CXX_DEBUG_LEAVE_TEXT("No next token after __attribute__");
+		return false;
+	}
+
+	if(!cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeOpeningParenthesis))
+	{
+		CXX_DEBUG_LEAVE_TEXT("Something that is not an opening parenthesis");
+		return true;
+	}
+
+	if(!cxxParserParseAndCondenseCurrentSubchain(
+			CXXTokenTypeOpeningParenthesis |
+				CXXTokenTypeOpeningSquareParenthesis |
+				CXXTokenTypeOpeningBracket,
+			false
+		))
+	{
+		CXX_DEBUG_LEAVE_TEXT("Failed to parse and condense subchains");
+		return false;
+	}
+
+	CXX_DEBUG_ASSERT(
+			cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeParenthesisChain),
+			"Should have a parenthesis chain as last token!"
+		);
+
+	// Try to make sense of certain kinds of __attribute__.
+	// the proper syntax is __attribute__(()), so look at the inner chain
+
+	CXXToken * pInner = cxxTokenChainFirst(g_cxx.pToken->pChain);
+	if(pInner)
+	{
+		if(pInner->pNext && cxxTokenTypeIs(pInner->pNext,CXXTokenTypeParenthesisChain))
+			pInner = cxxTokenChainFirst(pInner->pNext->pChain);
+
+		while(pInner)
+		{
+			if(cxxTokenTypeIs(pInner,CXXTokenTypeIdentifier))
+			{
+				CXX_DEBUG_PRINT("Analyzing attribyte %s",vStringValue(pInner->pszWord));
+				if(
+						(strcmp(vStringValue(pInner->pszWord),"always_inline") == 0) ||
+						(strcmp(vStringValue(pInner->pszWord),"__always_inline__") == 0)
+					)
+				{
+					CXX_DEBUG_PRINT("Found attribute 'always_inline'");
+					// assume "inline" has been seen.
+					g_cxx.uKeywordState |= CXXParserKeywordStateSeenInline;
+				} else if(
+						(strcmp(vStringValue(pInner->pszWord),"deprecated") == 0) ||
+						(strcmp(vStringValue(pInner->pszWord),"__deprecated__") == 0)
+					)
+				{
+					CXX_DEBUG_PRINT("Found attribute 'deprecated'");
+					// assume "inline" has been seen.
+					g_cxx.uKeywordState |= CXXParserKeywordStateSeenAttributeDeprecated;
+				}
+			}
+
+			// If needed, we could attach certain attributes to previous
+			// identifiers. But note that __attribute__ may apply to a
+			// following identifier too.
+
+			pInner = pInner->pNext;
+		}
+	}
+
+	// Now just kill the chain.
+	cxxTokenDestroy(cxxTokenChainTakeLast(g_cxx.pTokenChain));
+
+	// And finally extract yet another token.
+	CXX_DEBUG_LEAVE();
+	return cxxParserParseNextToken();
+}
+
+// An ignore token was encountered and it specifies to skip the
+// eventual following parenthesis.
+// The routine has to check if there is a following parenthesis
+// and eventually skip it but it MUST NOT parse the next token
+// if it is not a parenthesis. This is because the ignored token
+// may have a replacement and is that one that has to be returned
+// back to the caller from cxxParserParseNextToken().
+static bool cxxParserParseNextTokenSkipIgnoredParenthesis(void)
+{
+	CXX_DEBUG_ENTER();
+
+	cxxParserSkipToNonWhiteSpace();
+
+	if(g_cxx.iChar != '(')
+		return true; // no parenthesis
+
+	if(!cxxParserParseNextToken())
+	{
+		CXX_DEBUG_LEAVE_TEXT("No next token after ignored identifier");
+		return false;
+	}
+
+	if(!cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeOpeningParenthesis))
+	{
+		CXX_DEBUG_ASSERT(false,"Should have found an open parenthesis token here!");
+		CXX_DEBUG_LEAVE_TEXT("Internal error");
+		return false;
+	}
+
+	if(!cxxParserParseAndCondenseCurrentSubchain(
+			CXXTokenTypeOpeningParenthesis |
+				CXXTokenTypeOpeningSquareParenthesis |
+				CXXTokenTypeOpeningBracket,
+			false
+		))
+	{
+		CXX_DEBUG_LEAVE_TEXT("Failed to parse and condense subchains");
+		return false;
+	}
+
+	CXX_DEBUG_ASSERT(
+			cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeParenthesisChain),
+			"Should have a parenthesis chain as last token!"
+		);
+
+	// Now just kill the chain.
+	cxxTokenDestroy(cxxTokenChainTakeLast(g_cxx.pTokenChain));
+
+	CXX_DEBUG_LEAVE();
+	return true;
+}
+
+bool cxxParserParseNextToken(void)
 {
 	CXXToken * t = cxxTokenCreate();
 
-	cxxTokenChainAppend(g_cxx.pTokenChain,t);
+	// The token chain should not be allowed to grow arbitrairly large.
+	// The token structures are quite big and it's easy to grow up to
+	// 5-6GB or memory usage. However this limit should be large enough
+	// to accomodate all the reasonable statements that could have some
+	// information in them. This includes multiple function prototypes
+	// in a single statement (ImageMagick has some examples) but probably
+	// does NOT include large data tables.
+	if(g_cxx.pTokenChain->iCount > 16384)
+		cxxTokenChainDestroyLast(g_cxx.pTokenChain);
 
-	// More than 256 tokens is something like a big table, we
-	// don't need it (for now).
-	if(g_cxx.pTokenChain->iCount > 256)
-		cxxTokenChainDestroyFirst(g_cxx.pTokenChain);
+	cxxTokenChainAppend(g_cxx.pTokenChain,t);
 
 	g_cxx.pToken = t;
 
@@ -890,11 +1044,11 @@ boolean cxxParserParseNextToken(void)
 	if(g_cxx.iChar == EOF)
 	{
 		t->eType = CXXTokenTypeEOF;
-		t->bFollowedBySpace = FALSE;
-		return FALSE;
+		t->bFollowedBySpace = false;
+		return false;
 	}
 
-	unsigned int uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+	unsigned int uInfo = UINFO(g_cxx.iChar);
 
 	//printf("Char %c %02x info %u\n",g_cxx.iChar,g_cxx.iChar,uInfo);
 
@@ -902,7 +1056,7 @@ boolean cxxParserParseNextToken(void)
 	{
 		// word
 		t->eType = CXXTokenTypeIdentifier;
-		t->bFollowedBySpace = FALSE;
+		t->bFollowedBySpace = false;
 
 		vStringPut(t->pszWord,g_cxx.iChar);
 
@@ -913,14 +1067,14 @@ boolean cxxParserParseNextToken(void)
 			g_cxx.iChar = cppGetc();
 			if(isspace(g_cxx.iChar))
 			{
-				t->bFollowedBySpace = TRUE;
+				t->bFollowedBySpace = true;
 				g_cxx.iChar = cppGetc();
 				while(isspace(g_cxx.iChar))
 					g_cxx.iChar = cppGetc();
 			}
 
 			// non space
-			uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+			uInfo = UINFO(g_cxx.iChar);
 			if(!(uInfo & CXXCharTypeStartOfIdentifier))
 			{
 				// this is not an identifier after all
@@ -933,7 +1087,7 @@ boolean cxxParserParseNextToken(void)
 					g_cxx.iChar = cppGetc();
 					t->bFollowedBySpace = isspace(g_cxx.iChar);
 				}
-				return TRUE;
+				return true;
 			}
 		} else {
 			g_cxx.iChar = cppGetc();
@@ -941,52 +1095,95 @@ boolean cxxParserParseNextToken(void)
 
 		for(;;)
 		{
-			uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+			uInfo = UINFO(g_cxx.iChar);
 			if(!(uInfo & CXXCharTypePartOfIdentifier))
 				break;
 			vStringPut(t->pszWord,g_cxx.iChar);
 			g_cxx.iChar = cppGetc();
 		}
 
-		int iCXXKeyword = lookupKeyword(t->pszWord->buffer,g_cxx.eLanguage);
+		int iCXXKeyword;
+		const ignoredTokenInfo * pIgnore = NULL;
+
+check_keyword:
+
+		iCXXKeyword = lookupKeyword(t->pszWord->buffer,g_cxx.eLanguage);
 		if(iCXXKeyword >= 0)
 		{
 			if(
-					(iCXXKeyword == CXXKeywordFINAL) &&
-					(!g_cxx.bParsingClassStructOrUnionDeclaration)
+					(
+						(iCXXKeyword == CXXKeywordFINAL) &&
+						(!g_cxx.bParsingClassStructOrUnionDeclaration)
+					) || (
+						(
+							(iCXXKeyword == CXXKeywordPUBLIC) ||
+							(iCXXKeyword == CXXKeywordPROTECTED) ||
+							(iCXXKeyword == CXXKeywordPRIVATE)
+						) &&
+						(!g_cxx.bEnablePublicProtectedPrivateKeywords)
+					)
 				)
 			{
 				t->eType = CXXTokenTypeIdentifier;
 			} else {
 				t->eType = CXXTokenTypeKeyword;
 				t->eKeyword = (enum CXXKeyword)iCXXKeyword;
+
+				if(iCXXKeyword == CXXKeyword__ATTRIBUTE__)
+				{
+					// special handling for __attribute__
+					return cxxParserParseNextTokenCondenseAttribute();
+				}
 			}
 		} else {
-			boolean bIgnoreParens = FALSE;
-			const char * szReplacement = NULL;
-			if(isIgnoreToken(
-					vStringValue(t->pszWord),
-					&bIgnoreParens,
-					&szReplacement
-				))
+			// We can enter here also from a jump to check_keyword after finding
+			// and ignored token and a replacement.
+
+			if(!pIgnore)
 			{
-				CXX_DEBUG_PRINT("Ignore token %s",vStringValue(t->pszWord));
-				// FIXME: Handle ignore parens!
-				if(szReplacement && *szReplacement)
+				pIgnore = isIgnoreToken(vStringValue(t->pszWord));
+			
+				if(pIgnore)
 				{
-					vStringClear(t->pszWord);
-					vStringCatS(t->pszWord,szReplacement);
-				} else {
-					// skip
-					cxxTokenChainDestroyLast(g_cxx.pTokenChain);
+					CXX_DEBUG_PRINT("Ignore token %s",vStringValue(t->pszWord));
+
+					if(pIgnore->replacement)
+					{
+						CXX_DEBUG_PRINT(
+								"The token has replacement %s: applying",
+								pIgnore->replacement
+							);
+						vStringClear(t->pszWord);
+						vStringCatS(t->pszWord,pIgnore->replacement);
+					} else {
+						// kill it
+						CXX_DEBUG_PRINT("Ignore token has no replacement");
+						cxxTokenChainDestroyLast(g_cxx.pTokenChain);
+					}
+					
+					if(pIgnore->ignoreFollowingParenthesis)
+					{
+						CXX_DEBUG_PRINT("Ignored token specifies to ignore parens too");
+						if(!cxxParserParseNextTokenSkipIgnoredParenthesis())
+							return false;
+					}
+					
+					if(pIgnore->replacement)
+					{
+						// Already have a token to return
+						// Check again for keywords
+						goto check_keyword;
+					}
+					
+					// Have no token to return: parse it
 					return cxxParserParseNextToken();
 				}
 			}
 		}
 
-		t->bFollowedBySpace = t->bFollowedBySpace | isspace(g_cxx.iChar);
+		t->bFollowedBySpace = isspace(g_cxx.iChar);
 
-		return TRUE;
+		return true;
 	}
 
 	if(g_cxx.iChar == '-')
@@ -1008,7 +1205,7 @@ boolean cxxParserParseNextToken(void)
 			}
 		}
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 
 #if 0
@@ -1028,8 +1225,8 @@ boolean cxxParserParseNextToken(void)
 			g_cxx.iChar = cppGetc();
 			if(g_cxx.iChar == EOF)
 			{
-				t->bFollowedBySpace = FALSE;
-				return TRUE;
+				t->bFollowedBySpace = false;
+				return true;
 			}
 			if(g_cxx.iChar == '\\')
 			{
@@ -1037,8 +1234,8 @@ boolean cxxParserParseNextToken(void)
 				g_cxx.iChar = cppGetc();
 				if(g_cxx.iChar == EOF)
 				{
-					t->bFollowedBySpace = FALSE;
-					return TRUE;
+					t->bFollowedBySpace = false;
+					return true;
 				}
 			} else if(g_cxx.iChar == '"')
 			{
@@ -1047,7 +1244,7 @@ boolean cxxParserParseNextToken(void)
 			}
 		}
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 #else
 	if(g_cxx.iChar == STRING_SYMBOL)
@@ -1057,7 +1254,7 @@ boolean cxxParserParseNextToken(void)
 		vStringPut(t->pszWord,'"');
 		g_cxx.iChar = cppGetc();
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 #endif
 
@@ -1075,8 +1272,8 @@ boolean cxxParserParseNextToken(void)
 			g_cxx.iChar = cppGetc();
 			if(g_cxx.iChar == EOF)
 			{
-				t->bFollowedBySpace = FALSE;
-				return TRUE;
+				t->bFollowedBySpace = false;
+				return true;
 			}
 			if(g_cxx.iChar == '\\')
 			{
@@ -1084,8 +1281,8 @@ boolean cxxParserParseNextToken(void)
 				g_cxx.iChar = cppGetc();
 				if(g_cxx.iChar == EOF)
 				{
-					t->bFollowedBySpace = FALSE;
-					return TRUE;
+					t->bFollowedBySpace = false;
+					return true;
 				}
 			} else if(g_cxx.iChar == '\'')
 			{
@@ -1094,7 +1291,7 @@ boolean cxxParserParseNextToken(void)
 			}
 		}
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 #else
 	if(g_cxx.iChar == CHAR_SYMBOL)
@@ -1104,7 +1301,7 @@ boolean cxxParserParseNextToken(void)
 		vStringPut(t->pszWord,'\'');
 		g_cxx.iChar = cppGetc();
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 #endif
 
@@ -1117,14 +1314,14 @@ boolean cxxParserParseNextToken(void)
 		for(;;)
 		{
 			g_cxx.iChar = cppGetc();
-			uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+			uInfo = UINFO(g_cxx.iChar);
 			if(!(uInfo & CXXCharTypeValidInNumber))
 				break;
 			vStringPut(t->pszWord,g_cxx.iChar);
 		}
 
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 
 	if(uInfo & CXXCharTypeNamedSingleOrRepeatedCharToken)
@@ -1144,7 +1341,7 @@ boolean cxxParserParseNextToken(void)
 			} while(g_cxx.iChar == iChar);
 		}
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 
 	if(uInfo & CXXCharTypeNamedSingleOrOperatorToken)
@@ -1152,21 +1349,21 @@ boolean cxxParserParseNextToken(void)
 		t->eType = g_aCharTable[g_cxx.iChar].uSingleTokenType;
 		vStringPut(t->pszWord,g_cxx.iChar);
 		g_cxx.iChar = cppGetc();
-		uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+		uInfo = UINFO(g_cxx.iChar);
 		if(uInfo & (CXXCharTypeOperator | CXXCharTypeNamedSingleOrOperatorToken))
 		{
 			t->eType = CXXTokenTypeOperator;
 			do {
 				vStringPut(t->pszWord,g_cxx.iChar);
 				g_cxx.iChar = cppGetc();
-				uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+				uInfo = UINFO(g_cxx.iChar);
 			} while(
 					uInfo &
 						(CXXCharTypeOperator | CXXCharTypeNamedSingleOrOperatorToken)
 				);
 		}
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 
 	if(uInfo & CXXCharTypeNamedSingleCharToken)
@@ -1175,7 +1372,7 @@ boolean cxxParserParseNextToken(void)
 		vStringPut(t->pszWord,g_cxx.iChar);
 		g_cxx.iChar = cppGetc();
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 
 	if(uInfo & CXXCharTypeOperator)
@@ -1183,15 +1380,15 @@ boolean cxxParserParseNextToken(void)
 		t->eType = CXXTokenTypeOperator;
 		vStringPut(t->pszWord,g_cxx.iChar);
 		g_cxx.iChar = cppGetc();
-		uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+		uInfo = UINFO(g_cxx.iChar);
 		while(uInfo & CXXCharTypeOperator)
 		{
 			vStringPut(t->pszWord,g_cxx.iChar);
 			g_cxx.iChar = cppGetc();
-			uInfo = (g_cxx.iChar < 0x80) ? g_aCharTable[g_cxx.iChar].uType : 0;
+			uInfo = UINFO(g_cxx.iChar);
 		}
 		t->bFollowedBySpace = isspace(g_cxx.iChar);
-		return TRUE;
+		return true;
 	}
 
 	t->eType = CXXTokenTypeUnknown;
@@ -1199,5 +1396,5 @@ boolean cxxParserParseNextToken(void)
 	g_cxx.iChar = cppGetc();
 	t->bFollowedBySpace = isspace(g_cxx.iChar);
 
-	return TRUE;
+	return true;
 }

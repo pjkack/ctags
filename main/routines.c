@@ -17,8 +17,6 @@
 #endif
 #include <ctype.h>
 #include <string.h>
-#include <stdarg.h>
-#include <errno.h>
 #include <stdio.h>  /* to declare tempnam(), and SEEK_SET (hopefully) */
 
 #ifdef HAVE_FCNTL_H
@@ -66,6 +64,9 @@
 #ifdef HAVE_ICONV
 # include "mbcs.h"
 #endif
+#ifdef HAVE_ERRNO_H
+# include <errno.h>
+#endif
 
 #include "options.h"
 
@@ -88,7 +89,7 @@
 # ifdef S_IFLNK
 #  define S_ISLNK(mode)		(((mode) & S_IFMT) == S_IFLNK)
 # else
-#  define S_ISLNK(mode)		FALSE  /* assume no soft links */
+#  define S_ISLNK(mode)		false  /* assume no soft links */
 # endif
 #endif
 
@@ -96,7 +97,7 @@
 # ifdef S_IFDIR
 #  define S_ISDIR(mode)		(((mode) & S_IFMT) == S_IFDIR)
 # else
-#  define S_ISDIR(mode)		FALSE  /* assume no soft links */
+#  define S_ISDIR(mode)		false  /* assume no soft links */
 # endif
 #endif
 
@@ -149,7 +150,7 @@
 /*
  *  Miscellaneous macros
  */
-#define selected(var,feature)	(((int)(var) & (int)(feature)) == (int)feature)
+
 
 /*
 *   DATA DEFINITIONS
@@ -200,27 +201,6 @@ extern const char *getExecutableName (void)
 extern const char *getExecutablePath (void)
 {
 	return ExecutableProgram;
-}
-
-extern void error (
-		const errorSelection selection, const char *const format, ...)
-{
-	va_list ap;
-
-	va_start (ap, format);
-	fprintf (stderr, "%s: %s", getExecutableName (),
-			selected (selection, WARNING) ? "Warning: " : "");
-	vfprintf (stderr, format, ap);
-	if (selected (selection, PERROR))
-#ifdef HAVE_STRERROR
-		fprintf (stderr, " : %s", strerror (errno));
-#else
-		perror (" ");
-#endif
-	fputs ("\n", stderr);
-	va_end (ap);
-	if (selected (selection, FATAL) || Option.fatalWarnings)
-		exit (1);
 }
 
 /*
@@ -379,6 +359,56 @@ extern char* newUpperString (const char* str)
 	return result;
 }
 
+/* Safe wrapper for strtoul
+ *
+ * The conversion result is placed in value and must only be used if the
+ * function returned true.
+ */
+extern bool strToULong(const char *const str, int base, unsigned long *value)
+{
+	char *endptr;
+
+	errno = 0;
+	*value = strtoul (str, &endptr, base);
+	return *endptr == '\0' && str != endptr && errno == 0;
+}
+
+/* Safe wrapper for strtol/atol
+ *
+ * The conversion result is placed in value and must only be used if the
+ * function returned true.
+ */
+extern bool strToLong(const char *const str, int base, long *value)
+{
+	char *endptr;
+
+	errno = 0;
+	*value = strtol (str, &endptr, base);
+	return *endptr == '\0' && str != endptr && errno == 0;
+}
+
+extern bool strToUInt(const char *const str, int base, unsigned int *value)
+{
+	unsigned long ulong_value;
+
+	if(!strToULong(str, base, &ulong_value) || ulong_value > UINT_MAX)
+		return false;
+
+	*value = (unsigned int) ulong_value;
+	return true;
+}
+
+extern bool strToInt(const char *const str, int base, int *value)
+{
+	long long_value;
+
+	if(!strToLong(str, base, &long_value) || long_value > INT_MAX || long_value < INT_MIN)
+		return false;
+
+	*value = (int) long_value;
+	return true;
+}
+
 /*
  * File system functions
  */
@@ -409,21 +439,21 @@ extern fileStatus *eStat (const char *const fileName)
 		eStatFree (&file);
 		file.name = eStrdup (fileName);
 		if (lstat (file.name, &status) != 0)
-			file.exists = FALSE;
+			file.exists = false;
 		else
 		{
-			file.isSymbolicLink = (boolean) S_ISLNK (status.st_mode);
+			file.isSymbolicLink = (bool) S_ISLNK (status.st_mode);
 			if (file.isSymbolicLink  &&  stat (file.name, &status) != 0)
-				file.exists = FALSE;
+				file.exists = false;
 			else
 			{
-				file.exists = TRUE;
-				file.isDirectory = (boolean) S_ISDIR (status.st_mode);
-				file.isNormalFile = (boolean) (S_ISREG (status.st_mode));
-				file.isExecutable = (boolean) ((status.st_mode &
+				file.exists = true;
+				file.isDirectory = (bool) S_ISDIR (status.st_mode);
+				file.isNormalFile = (bool) (S_ISREG (status.st_mode));
+				file.isExecutable = (bool) ((status.st_mode &
 					(S_IXUSR | S_IXGRP | S_IXOTH)) != 0);
-				file.isSetuid = (boolean) ((status.st_mode & S_ISUID) != 0);
-				file.isSetgid = (boolean) ((status.st_mode & S_ISGID) != 0);
+				file.isSetuid = (bool) ((status.st_mode & S_ISUID) != 0);
+				file.isSetgid = (bool) ((status.st_mode & S_ISGID) != 0);
 				file.size = status.st_size;
 			}
 		}
@@ -440,21 +470,21 @@ extern void eStatFree (fileStatus *status)
 	}
 }
 
-extern boolean doesFileExist (const char *const fileName)
+extern bool doesFileExist (const char *const fileName)
 {
 	fileStatus *status = eStat (fileName);
 	return status->exists;
 }
 
-extern boolean doesExecutableExist (const char *const fileName)
+extern bool doesExecutableExist (const char *const fileName)
 {
 	fileStatus *status = eStat (fileName);
 	return status->exists && status->isExecutable;
 }
 
-extern boolean isRecursiveLink (const char* const dirName)
+extern bool isRecursiveLink (const char* const dirName)
 {
-	boolean result = FALSE;
+	bool result = false;
 	fileStatus *status = eStat (dirName);
 	if (status->isSymbolicLink)
 	{
@@ -481,20 +511,20 @@ extern boolean isRecursiveLink (const char* const dirName)
  *  Pathname manipulation (O/S dependent!!!)
  */
 
-static boolean isPathSeparator (const int c)
+static bool isPathSeparator (const int c)
 {
-	boolean result;
+	bool result;
 #if defined (MSDOS_STYLE_PATH)
-	result = (boolean) (strchr (PathDelimiters, c) != NULL);
+	result = (bool) (strchr (PathDelimiters, c) != NULL);
 #else
-	result = (boolean) (c == PATH_SEPARATOR);
+	result = (bool) (c == PATH_SEPARATOR);
 #endif
 	return result;
 }
 
 #if ! defined (HAVE_STAT_ST_INO)
 
-static void canonicalizePath (char *const path __unused__)
+static void canonicalizePath (char *const path CTAGS_ATTR_UNUSED)
 {
 # if defined (MSDOS_STYLE_PATH)
 	char *p;
@@ -506,14 +536,14 @@ static void canonicalizePath (char *const path __unused__)
 
 #endif
 
-extern boolean isSameFile (const char *const name1, const char *const name2)
+extern bool isSameFile (const char *const name1, const char *const name2)
 {
-	boolean result = FALSE;
+	bool result = false;
 #if defined (HAVE_STAT_ST_INO)
 	struct stat stat1, stat2;
 
 	if (stat (name1, &stat1) == 0  &&  stat (name2, &stat2) == 0)
-		result = (boolean) (stat1.st_ino == stat2.st_ino);
+		result = (bool) (stat1.st_ino == stat2.st_ino);
 #else
 	{
 		char *const n1 = absoluteFilename (name1);
@@ -521,9 +551,9 @@ extern boolean isSameFile (const char *const name1, const char *const name2)
 		canonicalizePath (n1);
 		canonicalizePath (n2);
 # if defined (CASE_INSENSITIVE_FILENAMES)
-		result = (boolean) (strcasecmp (n1, n2) == 0);
+		result = (bool) (strcasecmp (n1, n2) == 0);
 # else
-		result = (boolean) (strcmp (n1, n2) == 0);
+		result = (bool) (strcmp (n1, n2) == 0);
 # endif
 		free (n1);
 		free (n2);
@@ -579,8 +609,8 @@ extern const char *fileExtension (const char *const fileName)
 	const char *extension;
 	const char *pDelimiter = NULL;
 	const char *const base = baseFilename (fileName);
-	if (pDelimiter == NULL)
-	    pDelimiter = strrchr (base, '.');
+
+	pDelimiter = strrchr (base, '.');
 
 	if (pDelimiter == NULL)
 		extension = "";
@@ -608,16 +638,16 @@ extern char* baseFilenameSansExtensionNew (const char *const fileName,
 		return NULL;
 }
 
-extern boolean isAbsolutePath (const char *const path)
+extern bool isAbsolutePath (const char *const path)
 {
-	boolean result = FALSE;
+	bool result = false;
 #if defined (MSDOS_STYLE_PATH)
 	if (isPathSeparator (path [0]))
-		result = TRUE;
+		result = true;
 	else if (isalpha (path [0])  &&  path [1] == ':')
 	{
 		if (isPathSeparator (path [2]))
-			result = TRUE;
+			result = true;
 		else
 			/*  We don't support non-absolute file names with a drive
 			 *  letter, like `d:NAME' (it's too much hassle).
@@ -637,14 +667,11 @@ extern char *combinePathAndFile (
 {
 	vString *const filePath = vStringNew ();
 	const int lastChar = path [strlen (path) - 1];
-	boolean terminated = isPathSeparator (lastChar);
+	bool terminated = isPathSeparator (lastChar);
 
 	vStringCopyS (filePath, path);
 	if (! terminated)
-	{
 		vStringPut (filePath, OUTPUT_PATH_SEPARATOR);
-		vStringTerminate (filePath);
-	}
 	vStringCatS (filePath, file);
 
 	return vStringDeleteUnwrap (filePath);
@@ -656,15 +683,15 @@ extern char *combinePathAndFile (
  */
 static char* concat (const char *s1, const char *s2, const char *s3)
 {
-  int len1 = strlen (s1), len2 = strlen (s2), len3 = strlen (s3);
-  char *result = xMalloc (len1 + len2 + len3 + 1, char);
+	int len1 = strlen (s1), len2 = strlen (s2), len3 = strlen (s3);
+	char *result = xMalloc (len1 + len2 + len3 + 1, char);
 
-  strcpy (result, s1);
-  strcpy (result + len1, s2);
-  strcpy (result + len1 + len2, s3);
-  result [len1 + len2 + len3] = '\0';
+	strcpy (result, s1);
+	strcpy (result + len1, s2);
+	strcpy (result + len1 + len2, s3);
+	result [len1 + len2 + len3] = '\0';
 
-  return result;
+	return result;
 }
 
 /* Return a newly allocated string containing the absolute file name of FILE
@@ -858,5 +885,3 @@ extern MIO *tempFile (const char *const mode, char **const pName)
 	*pName = name;
 	return mio;
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */

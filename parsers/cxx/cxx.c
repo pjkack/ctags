@@ -15,7 +15,9 @@
 #include "cxx_token_chain.h"
 #include "cxx_parser.h"
 #include "cxx_scope.h"
+#include "cxx_tag.h"
 
+#include "dependency.h"
 #include "selectors.h"
 
 //
@@ -85,8 +87,8 @@ parserDefinition * CParser (void)
 
 	parserDefinition* def = parserNew("C");
 
-	def->kinds = cxxTagGetKindOptions();
-	def->kindCount = cxxTagGetKindOptionCount();
+	def->kinds = cxxTagGetCKindOptions();
+	def->kindCount = cxxTagGetCKindOptionCount();
 	def->fieldSpecs = cxxTagGetCFieldSpecifiers();
 	def->fieldSpecCount = cxxTagGetCFieldSpecifierCount();
 	def->extensions = extensions;
@@ -94,7 +96,7 @@ parserDefinition * CParser (void)
 	def->initialize = cxxCParserInitialize;
 	def->finalize = cxxParserCleanup;
 	def->selectLanguage = selectors;
-	def->useCork = TRUE; // We use corking to block output until the end of file
+	def->useCork = true; // We use corking to block output until the end of file
 
 	return def;
 }
@@ -110,13 +112,18 @@ parserDefinition * CppParser (void)
 #endif
 		NULL
 	};
+	static parserDependency dependencies [] = {
+		{ DEPTYPE_KIND_OWNER, "C" },
+	};
 
 	static selectLanguage selectors[] = { selectByObjectiveCKeywords, NULL };
 
 	parserDefinition* def = parserNew("C++");
 
-	def->kinds = cxxTagGetKindOptions();
-	def->kindCount = cxxTagGetKindOptionCount();
+	def->dependencies = dependencies;
+	def->dependencyCount = ARRAY_SIZE (dependencies);
+	def->kinds = cxxTagGetCPPKindOptions();
+	def->kindCount = cxxTagGetCPPKindOptionCount();
 	def->fieldSpecs = cxxTagGetCPPFieldSpecifiers();
 	def->fieldSpecCount = cxxTagGetCPPFieldSpecifierCount();
 	def->extensions = extensions;
@@ -124,7 +131,7 @@ parserDefinition * CppParser (void)
 	def->initialize = cxxCppParserInitialize;
 	def->finalize = cxxParserCleanup;
 	def->selectLanguage = selectors;
-	def->useCork = TRUE; // We use corking to block output until the end of file
+	def->useCork = true; // We use corking to block output until the end of file
 
 	return def;
 }

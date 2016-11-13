@@ -12,7 +12,9 @@
 */
 #include "general.h"  /* must always come first */
 
-#define _GNU_SOURCE   /* for asprintf */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE   /* for asprintf */
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -28,10 +30,12 @@
 #include "main.h"
 #define OPTION_WRITE
 #include "options.h"
+#include "output.h"
 #include "parse.h"
 #include "ptag.h"
 #include "routines.h"
 #include "xtag.h"
+#include "routines.h"
 
 /*
 *   MACROS
@@ -65,7 +69,7 @@
 # define RECURSE_SUPPORTED
 #endif
 
-#define isCompoundOption(c)  (boolean) (strchr ("fohiILpDb", (c)) != NULL)
+#define isCompoundOption(c)  (bool) (strchr ("fohiILpDb", (c)) != NULL)
 
 #define SUBDIR_OPTLIB "optlib"
 #define SUBDIR_PRELOAD "preload"
@@ -96,23 +100,23 @@ typedef void (*parametricOptionHandler) (const char *const option, const char *c
 typedef const struct {
 	const char* name;   /* name of option as specified by user */
 	parametricOptionHandler handler;  /* routine to handle option */
-	boolean initOnly;   /* option must be specified before any files */
+	bool initOnly;   /* option must be specified before any files */
 	unsigned long acceptableStages;
 } parametricOption;
 
 typedef const struct sBooleanOption {
 	const char* name;   /* name of option as specified by user */
-	boolean* pValue;    /* pointer to option value */
-	boolean initOnly;   /* option must be specified before any files */
+	bool* pValue;    /* pointer to option value */
+	bool initOnly;   /* option must be specified before any files */
 	unsigned long acceptableStages;
-	boolean* (* redirect) (const struct sBooleanOption *const option);
+	bool* (* redirect) (const struct sBooleanOption *const option);
 } booleanOption;
 
 /*
 *   DATA DEFINITIONS
 */
 
-static boolean NonOptionEncountered = FALSE;
+static bool NonOptionEncountered = false;
 static stringList *OptionFiles;
 
 typedef stringList searchPathList;
@@ -121,8 +125,8 @@ static searchPathList *PreloadPathList;
 static searchPathList *DriversPathList;
 
 static stringList* Excluded;
-static boolean FilesRequired = TRUE;
-static boolean SkipConfiguration;
+static bool FilesRequired = true;
+static bool SkipConfiguration;
 
 static const char *const HeaderExtensions [] = {
 	"h", "H", "hh", "hpp", "hxx", "h++", "inc", "def", NULL
@@ -130,18 +134,18 @@ static const char *const HeaderExtensions [] = {
 
 optionValues Option = {
 	NULL,       /* -I */
-	FALSE,      /* -a */
-	FALSE,      /* -B */
-	FALSE,      /* -e */
+	false,      /* -a */
+	false,      /* -B */
+	false,      /* -e */
 #ifdef MACROS_USE_PATTERNS
 	EX_PATTERN, /* -n, --excmd */
 #else
 	EX_MIX,     /* -n, --excmd */
 #endif
-	FALSE,      /* -R */
+	false,      /* -R */
 	SO_SORTED,  /* -u, --sort */
-	FALSE,      /* -V */
-	FALSE,      /* -x */
+	false,      /* -V */
+	false,      /* -x */
 	.customXfmt = NULL,
 	NULL,       /* -L */
 	NULL,       /* -o */
@@ -153,24 +157,24 @@ optionValues Option = {
 	NULL,		/* --input-encoding */
 	NULL,		/* --output-encoding */
 #endif
-	FALSE,      /* --if0 */
+	false,      /* --if0 */
 	LANG_AUTO,  /* --lang */
-	TRUE,       /* --links */
-	FALSE,      /* --filter */
+	true,       /* --links */
+	false,      /* --filter */
 	NULL,       /* --filter-terminator */
-	FALSE,      /* --tag-relative */
-	FALSE,      /* --totals */
-	FALSE,      /* --line-directives */
-	FALSE,	    /* --print-language */
-	FALSE,	    /* --guess-language-eagerly(-G) */
-	FALSE,	    /* --quiet */
-	FALSE,	    /* --_allow-xcmd-in-homedir */
-	FALSE,	    /* --_fatal-warnings */
+	false,      /* --tag-relative */
+	false,      /* --totals */
+	false,      /* --line-directives */
+	false,	    /* --print-language */
+	false,	    /* --guess-language-eagerly(-G) */
+	false,	    /* --quiet */
+	false,	    /* --_allow-xcmd-in-homedir */
+	false,	    /* --_fatal-warnings */
 	.patternLengthLimit = 96,
-	.putFieldPrefix = FALSE,
+	.putFieldPrefix = false,
 	.maxRecursionDepth = 0xffffffff,
-	.machinable = FALSE,
-	.withListHeader = TRUE,
+	.machinable = false,
+	.withListHeader = true,
 #ifdef DEBUG
 	0, 0        /* -D, -b */
 #endif
@@ -243,6 +247,9 @@ static optionDescription LongOptionDescription [] = {
  {1,"      Include extra tag entries for selected information (flags: \"Ffq.\") [F]."},
  {1,"  --fields=[+|-]flags"},
  {1,"      Include selected extension fields (flags: \"afmikKlnsStzZ\") [fks]."},
+ {1,"  --fields-<LANG|*>=[+|-]flags"},
+ {1,"      Include selected <LANG> own extension fields"},
+ {1,"      (flags: --list-fields=<LANG>)."},
  {1,"  --file-scope=[yes|no]"},
  {1,"       Should tags scoped only for a single file (e.g. \"static\" tags)"},
  {1,"       be included in the output [yes]?"},
@@ -303,7 +310,7 @@ static optionDescription LongOptionDescription [] = {
  {1,"       Output list of extra tag flags."},
  {1,"  --list-features"},
  {1,"       Output list of features."},
- {1,"  --list-fields"},
+ {1,"  --list-fields=[language|all]"},
  {1,"       Output list of fields. This works with --machinable."},
  {1,"  --list-file-kind"},
  {1,"       List kind letter for file."},
@@ -345,6 +352,14 @@ static optionDescription LongOptionDescription [] = {
  {1,"      The encoding to write the tag file in. Defaults to UTF-8 if --input-encoding"},
  {1,"      is specified, otherwise no conversion is performed."},
 #endif
+ {0,"  --output-format=ctags|etags|xref"
+#ifdef HAVE_JANSSON
+  "|json"
+#endif
+ },
+ {0,"      Specify the output format. [ctags]"},
+ {0,"  --pattern-length-limit=N"},
+ {0,"      Cutoff patterns of tag entries after N characters. Disable by setting to 0. [96]"},
  {0,"  --print-language"},
  {0,"       Don't make tags file but just print the guessed language name for"},
  {0,"       input file."},
@@ -455,6 +470,12 @@ static const char *const Features [] = {
 #ifdef HAVE_LIBXML
 	"xpath",
 #endif
+#ifdef HAVE_JANSSON
+	"json",
+#endif
+#ifdef HAVE_LIBYAML
+	"yaml",
+#endif
 	NULL
 };
 
@@ -474,8 +495,8 @@ static const char *const StageDescription [] = {
 /*
 *   FUNCTION PROTOTYPES
 */
-static boolean parseFileOptions (const char *const fileName);
-static boolean parseAllConfigurationFilesOptionsInDirectory (const char *const fileName,
+static bool parseFileOptions (const char *const fileName);
+static bool parseAllConfigurationFilesOptionsInDirectory (const char *const fileName,
 							     stringList* const already_loaded_files);
 
 /*
@@ -623,11 +644,11 @@ extern void setDefaultTagFileName (void)
 		Option.tagFileName = stringCopy (CTAGS_FILE);
 }
 
-extern boolean filesRequired (void)
+extern bool filesRequired (void)
 {
-	boolean result = FilesRequired;
+	bool result = FilesRequired;
 	if (Option.recurse)
-		result = FALSE;
+		result = false;
 	return result;
 }
 
@@ -637,11 +658,10 @@ extern void checkOptions (void)
 	if (Option.xref && (Option.customXfmt == NULL))
 	{
 		notice = "xref output";
-		if (isXtagEnabled(XTAG_FILE_NAMES) || isXtagEnabled(XTAG_FILE_NAMES_WITH_TOTAL_LINES))
+		if (isXtagEnabled(XTAG_FILE_NAMES))
 		{
 			error (WARNING, "%s disables file name tags", notice);
-			enableXtag (XTAG_FILE_NAMES, FALSE);
-			enableXtag (XTAG_FILE_NAMES_WITH_TOTAL_LINES, FALSE);
+			enableXtag (XTAG_FILE_NAMES, false);
 		}
 	}
 	if (Option.append)
@@ -656,7 +676,7 @@ extern void checkOptions (void)
 		if (Option.printTotals)
 		{
 			error (WARNING, "%s disables totals", notice);
-			Option.printTotals = FALSE;
+			Option.printTotals = false;
 		}
 		if (Option.tagFileName != NULL)
 			error (WARNING, "%s ignores output tag file name", notice);
@@ -692,10 +712,11 @@ extern langType getLanguageComponentInOption (const char *const option,
 
 static void setEtagsMode (void)
 {
-	Option.etags = TRUE;
+	Option.etags = true;
 	Option.sorted = SO_UNSORTED;
-	Option.lineDirectives = FALSE;
-	Option.tagRelative = TRUE;
+	Option.lineDirectives = false;
+	Option.tagRelative = true;
+	setTagWriter (&etagsWriter);
 }
 
 extern void testEtagsInvocation (void)
@@ -714,6 +735,20 @@ extern void testEtagsInvocation (void)
 	eFree (execName);
 	eFree (etags);
 }
+
+static void setXrefMode (void)
+{
+	Option.xref = true;
+	setTagWriter (&xrefWriter);
+}
+
+#ifdef HAVE_JANSSON
+static void setJsonMode (void)
+{
+	enablePtag (PTAG_JSON_OUTPUT_VERSION, true);
+	setTagWriter (&jsonWriter);
+}
+#endif
 
 /*
  *  Cooked argument parsing
@@ -771,23 +806,23 @@ static void cArgRead (cookedArgs *const current)
 		Assert (item != NULL);
 		if (strncmp (item, "--", (size_t) 2) == 0)
 		{
-			current->isOption = TRUE;
-			current->longOption = TRUE;
+			current->isOption = true;
+			current->longOption = true;
 			parseLongOption (current, item + 2);
 			Assert (current->item != NULL);
 			Assert (current->parameter != NULL);
 		}
 		else if (*item == '-')
 		{
-			current->isOption = TRUE;
-			current->longOption = FALSE;
+			current->isOption = true;
+			current->longOption = false;
 			current->shortOptions = item + 1;
 			parseShortOption (current);
 		}
 		else
 		{
-			current->isOption = FALSE;
-			current->longOption = FALSE;
+			current->isOption = false;
+			current->longOption = false;
 			current->item = eStrdup (item);
 			current->parameter = NULL;
 		}
@@ -840,22 +875,22 @@ extern void cArgDelete (cookedArgs* const current)
 	eFree (current);
 }
 
-static boolean cArgOptionPending (cookedArgs* const current)
+static bool cArgOptionPending (cookedArgs* const current)
 {
-	boolean result = FALSE;
+	bool result = false;
 	if (current->shortOptions != NULL)
 		if (*current->shortOptions != '\0')
-			result = TRUE;
+			result = true;
 	return result;
 }
 
-extern boolean cArgOff (cookedArgs* const current)
+extern bool cArgOff (cookedArgs* const current)
 {
 	Assert (current != NULL);
-	return (boolean) (argOff (current->args) && ! cArgOptionPending (current));
+	return (bool) (argOff (current->args) && ! cArgOptionPending (current));
 }
 
-extern boolean cArgIsOption (cookedArgs* const current)
+extern bool cArgIsOption (cookedArgs* const current)
 {
 	Assert (current != NULL);
 	return current->isOption;
@@ -883,8 +918,8 @@ extern void cArgForth (cookedArgs* const current)
 			cArgRead (current);
 		else
 		{
-			current->isOption = FALSE;
-			current->longOption = FALSE;
+			current->isOption = false;
+			current->longOption = false;
 			current->shortOptions = NULL;
 			current->item = NULL;
 			current->parameter = NULL;
@@ -897,11 +932,11 @@ extern void cArgForth (cookedArgs* const current)
  */
 
 static void addExtensionList (
-		stringList *const slist, const char *const elist, const boolean clear)
+		stringList *const slist, const char *const elist, const bool clear)
 {
 	char *const extensionList = eStrdup (elist);
 	const char *extension = NULL;
-	boolean first = TRUE;
+	bool first = true;
 
 	if (clear)
 	{
@@ -923,7 +958,7 @@ static void addExtensionList (
 		verbose ("%s%s", first ? "" : ", ",
 				*extension == '\0' ? "(NONE)" : extension);
 		stringListAdd (slist, vStringNewInit (extension));
-		first = FALSE;
+		first = false;
 		if (separator == NULL)
 			extension = NULL;
 		else
@@ -938,18 +973,18 @@ static void addExtensionList (
 	END_VERBOSE();
 }
 
-static boolean isFalse (const char *parameter)
+static bool isFalse (const char *parameter)
 {
-	return (boolean) (
+	return (bool) (
 		strcasecmp (parameter, "0"  ) == 0  ||
 		strcasecmp (parameter, "n"  ) == 0  ||
 		strcasecmp (parameter, "no" ) == 0  ||
 		strcasecmp (parameter, "off") == 0);
 }
 
-static boolean isTrue (const char *parameter)
+static bool isTrue (const char *parameter)
 {
-	return (boolean) (
+	return (bool) (
 		strcasecmp (parameter, "1"  ) == 0  ||
 		strcasecmp (parameter, "y"  ) == 0  ||
 		strcasecmp (parameter, "yes") == 0  ||
@@ -960,9 +995,9 @@ static boolean isTrue (const char *parameter)
  *  file for the purposes of determining whether enclosed tags are global or
  *  static.
  */
-extern boolean isIncludeFile (const char *const fileName)
+extern bool isIncludeFile (const char *const fileName)
 {
-	boolean result = FALSE;
+	bool result = false;
 	const char *const extension = fileExtension (fileName);
 	if (Option.headerExt != NULL)
 		result = stringListExtensionMatched (Option.headerExt, extension);
@@ -974,7 +1009,7 @@ extern boolean isIncludeFile (const char *const fileName)
  */
 
  static void processConfigFilenameOption (
-		const char *const option __unused__, const char *const parameter)
+		const char *const option CTAGS_ATTR_UNUSED, const char *const parameter)
  {
 	freeString (&Option.configFilename);
 	Option.configFilename = stringCopy (parameter);
@@ -991,12 +1026,12 @@ static void processEtagsInclude (
 		if (Option.etagsInclude == NULL)
 			Option.etagsInclude = stringListNew ();
 		stringListAdd (Option.etagsInclude, file);
-		FilesRequired = FALSE;
+		FilesRequired = false;
 	}
 }
 
 static void processExcludeOption (
-		const char *const option __unused__, const char *const parameter)
+		const char *const option CTAGS_ATTR_UNUSED, const char *const parameter)
 {
 	const char *const fileName = parameter + 1;
 	if (parameter [0] == '\0')
@@ -1022,10 +1057,10 @@ static void processExcludeOption (
 	}
 }
 
-extern boolean isExcludedFile (const char* const name)
+extern bool isExcludedFile (const char* const name)
 {
 	const char* base = baseFilename (name);
-	boolean result = FALSE;
+	bool result = false;
 	if (Excluded != NULL)
 	{
 		result = stringListFileMatched (Excluded, base);
@@ -1049,81 +1084,120 @@ static void processExcmdOption (
 	}
 }
 
+static void resetXtags (bool mode)
+{
+	int i;
+	for (i = 0; i < XTAG_COUNT; i++)
+		enableXtag (i, mode);
+}
+
 static void processExtraTagsOption (
 		const char *const option, const char *const parameter)
 {
 	xtagType t;
 	const char *p = parameter;
-	boolean mode = TRUE;
+	bool mode = true;
 	int c;
-	int i;
+	static vString *longName;
+	bool inLongName = false;
+	const char *x;
 
-	if (*p != '+'  &&  *p != '-')
+	if (*p == '*')
 	{
-		int i;
-		for (i = 0; i < XTAG_COUNT; i++)
-			enableXtag (i, FALSE);
+		resetXtags (true);
+		p++;
 	}
-	while ((c = *p++) != '\0') switch (c)
+	else if (*p != '+'  &&  *p != '-')
+		resetXtags (false);
+
+	longName = vStringNewOrClear (longName);
+
+	while ((c = *p++) != '\0')
 	{
-		case '+': mode = TRUE;                break;
-		case '-': mode = FALSE;               break;
-		case '*':
-			for (i = 0; i < XTAG_COUNT; ++i)
-				enableXtag (i, TRUE);
+		switch (c)
+		{
+		case '+':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = true;
 			break;
-		default:
-			t = getXtagTypeForOption (c);
+		case '-':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = false;
+			break;
+		case '{':
+			if (inLongName)
+				error(FATAL,
+				      "unexpected character in extra specification: \'%c\'",
+				      c);
+			inLongName = true;
+			break;
+		case '}':
+			if (!inLongName)
+				error(FATAL,
+				      "unexpected character in extra specification: \'%c\'",
+				      c);
+			x = vStringValue (longName);
+			t = getXtagTypeForName (x);
+
 			if (t == XTAG_UNKNOWN)
-				error(WARNING, "Unsupported parameter '%c' for \"%s\" option",
-				      c, option);
+				error(WARNING, "Unsupported parameter '{%s}' for \"%s\" option",
+				      x, option);
 			else
 				enableXtag (t, mode);
+
+			inLongName = false;
+			vStringClear (longName);
 			break;
+		default:
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+			{
+				t = getXtagTypeForLetter (c);
+				if (t == XTAG_UNKNOWN)
+					error(WARNING, "Unsupported parameter '%c' for \"%s\" option",
+					      c, option);
+				else
+					enableXtag (t, mode);
+			}
+			break;
+		}
 	}
 }
 
-static void resetFieldsOption (boolean mode)
+static void resetFieldsOption (langType lang, bool mode)
 {
 	int i;
 
 	for (i = 0; i < countFields (); ++i)
-		if (!isFieldFixed (i))
-			enableField (i, mode);
+		if ((lang == LANG_AUTO) || (lang == getFieldOwner (i)))
+			enableField (i, mode, false);
 }
 
 static void processFieldsOption (
 		const char *const option, const char *const parameter)
 {
 	const char *p = parameter;
-	boolean mode = TRUE;
+	bool mode = true;
 	int c;
 	fieldType t;
-	int i;
 
 	static vString * longName;
-	boolean inLongName = FALSE;
-	langType language;
+	bool inLongName = false;
 
-	if (!longName)
-		longName = vStringNew ();
-	else
-		vStringClear (longName);
+	longName = vStringNewOrClear (longName);
 
 	if (*p == '*')
 	{
-		for (i = 0; i < countParsers(); i++)
-			initializeParser (i);
-
-		resetFieldsOption (TRUE);
+		resetFieldsOption (LANG_IGNORE, true);
 		p++;
 	}
 	else if (*p != '+'  &&  *p != '-')
-	{
-		for (i = 0; i < countParsers(); i++)
-			initializeParser (i);
-		resetFieldsOption (FALSE);
-	}
+		resetFieldsOption (LANG_IGNORE, false);
 
 	while ((c = *p++) != '\0') switch (c)
 	{
@@ -1131,20 +1205,20 @@ static void processFieldsOption (
 			if (inLongName)
 				vStringPut (longName, c);
 			else
-				mode = TRUE;
+				mode = true;
 			break;
 		case '-':
 			if (inLongName)
 				vStringPut (longName, c);
 			else
-				mode = FALSE;
+				mode = false;
 			break;
 		case '{':
 			if (inLongName)
 				error(FATAL,
 				      "unexpected character in field specification: \'%c\'",
 				      c);
-			inLongName = TRUE;
+			inLongName = true;
 			break;
 		case '}':
 			if (!inLongName)
@@ -1153,24 +1227,16 @@ static void processFieldsOption (
 				      c);
 
 			{
-				const char *f;
-
-				language = getLanguageComponentInFieldName (vStringValue (longName), &f);
-				t = getFieldTypeForNameAndLanguage (f, language);
+				const char *f = vStringValue (longName);
+				t = getFieldTypeForNameAndLanguage (f, LANG_IGNORE);
 			}
 
 			if (t == FIELD_UNKNOWN)
 				error(FATAL, "nosuch field: \'%s\'", vStringValue (longName));
 
-			enableField (t, mode);
-			if (language == LANG_AUTO)
-			{
-				fieldType ftype_next = t;
-				while ((ftype_next = nextFieldSibling (ftype_next)) != FIELD_UNKNOWN)
-					enableField (ftype_next, mode);
-			}
+			enableField (t, mode, true);
 
-			inLongName = FALSE;
+			inLongName = false;
 			vStringClear (longName);
 			break;
 		default :
@@ -1182,18 +1248,15 @@ static void processFieldsOption (
 				if (t == FIELD_UNKNOWN)
 					error(WARNING, "Unsupported parameter '%c' for \"%s\" option",
 					      c, option);
-				else if (isFieldFixed (t) && (mode == FALSE))
-					error(WARNING, "Cannot disable basic field: '%c'(%s) for \"%s\" option",
-					      c, getFieldName (t), option);
 				else
-					enableField (t, mode);
+					enableField (t, mode, true);
 			}
 			break;
 	}
 }
 
 static void processFilterTerminatorOption (
-		const char *const option __unused__, const char *const parameter)
+		const char *const option CTAGS_ATTR_UNUSED, const char *const parameter)
 {
 	freeString (&Option.filterTerminator);
 	Option.filterTerminator = stringCopy (parameter);
@@ -1270,8 +1333,8 @@ static void printFeatureList (void)
 }
 
 
-static void processListFeaturesOption(const char *const option __unused__,
-				      const char *const parameter __unused__)
+static void processListFeaturesOption(const char *const option CTAGS_ATTR_UNUSED,
+				      const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	int i;
 
@@ -1283,13 +1346,26 @@ static void processListFeaturesOption(const char *const option __unused__,
 	exit (0);
 }
 
-static void processListFieldsOption(const char *const option __unused__,
-				    const char *const parameter __unused__)
+static void processListFieldsOption(const char *const option CTAGS_ATTR_UNUSED,
+				    const char *const parameter)
 {
-	int i;
-	for (i = 0; i < countParsers(); i++)
-		initializeParser (i);
-	printFields ();
+	if (parameter [0] == '\0' || strcasecmp (parameter, "all") == 0)
+	{
+		initializeParser (LANG_AUTO);
+		printFields (LANG_AUTO);
+	}
+	else
+	{
+		langType language = getNamedLanguage (parameter, 0);
+		if (language == LANG_IGNORE)
+			error (FATAL, "Unknown language \"%s\" in \"%s\" option", parameter, option);
+		else
+		{
+			initializeParser (language);
+			printFields (language);
+		}
+
+	}
 	exit (0);
 }
 
@@ -1314,8 +1390,8 @@ static void printProgramIdentification (void)
 }
 
 static void processHelpOption (
-		const char *const option __unused__,
-		const char *const parameter __unused__)
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	printProgramIdentification ();
 	putchar ('\n');
@@ -1357,7 +1433,7 @@ static char* skipPastMap (char* p)
 static char* extractMapFromParameter (const langType language,
 				      char* parameter,
 				      char** tail,
-				      boolean* pattern_p,
+				      bool* pattern_p,
 				      char* (* skip) (char *))
 {
 	char* p = NULL;
@@ -1367,7 +1443,7 @@ static char* extractMapFromParameter (const langType language,
 
 	if (first == EXTENSION_SEPARATOR)  /* extension map */
 	{
-		*pattern_p = FALSE;
+		*pattern_p = false;
 
 		++parameter;
 		p = (* skip) (parameter);
@@ -1389,7 +1465,7 @@ static char* extractMapFromParameter (const langType language,
 	}
 	else if (first == PATTERN_START)  /* pattern map */
 	{
-		*pattern_p = TRUE;
+		*pattern_p = true;
 
 		++parameter;
 		for (p = parameter  ;  *p != PATTERN_STOP  &&  *p != '\0'  ;  ++p)
@@ -1415,16 +1491,16 @@ static char* extractMapFromParameter (const langType language,
 }
 
 static char* addLanguageMap (const langType language, char* map_parameter,
-			     boolean exclusiveInAllLanguages)
+			     bool exclusiveInAllLanguages)
 {
 	char* p = NULL;
-	boolean pattern_p;
+	bool pattern_p;
 	char* map;
 
 	map = extractMapFromParameter (language, map_parameter, &p, &pattern_p, skipPastMap);
-	if (map && pattern_p == FALSE)
+	if (map && pattern_p == false)
 		addLanguageExtensionMap (language, map, exclusiveInAllLanguages);
-	else if (map && pattern_p == TRUE)
+	else if (map && pattern_p == true)
 		addLanguagePatternMap (language, map, exclusiveInAllLanguages);
 	else
 		error (FATAL, "Badly formed language map for %s language",
@@ -1438,13 +1514,13 @@ static char* addLanguageMap (const langType language, char* map_parameter,
 static char* removeLanguageMap (const langType language, char* map_parameter)
 {
 	char* p = NULL;
-	boolean pattern_p;
+	bool pattern_p;
 	char* map;
 
 	map = extractMapFromParameter (language, map_parameter, &p, &pattern_p, skipPastMap);
-	if (map && pattern_p == FALSE)
+	if (map && pattern_p == false)
 		removeLanguageExtensionMap (language, map);
-	else if (map && pattern_p == TRUE)
+	else if (map && pattern_p == true)
 		removeLanguagePatternMap (language, map);
 	else
 		error (FATAL, "Badly formed language map for %s language",
@@ -1463,7 +1539,7 @@ static char* processLanguageMap (char* map)
 	{
 		langType language;
 		char *list = separator + 1;
-		boolean clear = FALSE;
+		bool clear = false;
 		*separator = '\0';
 		language = getNamedLanguage (map, 0);
 		if (language != LANG_IGNORE)
@@ -1473,7 +1549,7 @@ static char* processLanguageMap (char* map)
 			if (*list == '+')
 				++list;
 			else
-				clear = TRUE;
+				clear = true;
 			for (p = list  ;  *p != ','  &&  *p != '\0'  ;  ++p)  /*no-op*/ ;
 			if ((size_t) (p - list) == strlen (deflt) &&
 				strncasecmp (list, deflt, p - list) == 0)
@@ -1492,7 +1568,7 @@ static char* processLanguageMap (char* map)
 				else
 					verbose ("    Adding to %s language map:", getLanguageName (language));
 				while (list != NULL  &&  *list != '\0'  &&  *list != ',')
-					list = addLanguageMap (language, list, TRUE);
+					list = addLanguageMap (language, list, true);
 				verbose ("\n");
 			}
 			if (list != NULL  &&  *list == ',')
@@ -1529,7 +1605,7 @@ static void processLanguagesOption (
 {
 	char *const langs = eStrdup (parameter);
 	enum { Add, Remove, Replace } mode = Replace;
-	boolean first = TRUE;
+	bool first = true;
 	char *lang = langs;
 	const char* prefix = "";
 	verbose ("    Enabled languages: ");
@@ -1549,24 +1625,24 @@ static void processLanguagesOption (
 			prefix = "- ";
 		}
 		if (mode == Replace)
-			enableLanguages (FALSE);
+			enableLanguages (false);
 		if (end != NULL)
 			*end = '\0';
 		if (lang [0] != '\0')
 		{
 			if (strcmp (lang, "all") == 0)
-				enableLanguages ((boolean) (mode != Remove));
+				enableLanguages ((bool) (mode != Remove));
 			else
 			{
 				const langType language = getNamedLanguage (lang, 0);
 				if (language == LANG_IGNORE)
 					error (WARNING, "Unknown language \"%s\" in \"%s\" option", lang, option);
 				else
-					enableLanguage (language, (boolean) (mode != Remove));
+					enableLanguage (language, (bool) (mode != Remove));
 			}
 			verbose ("%s%s%s", (first ? "" : ", "), prefix, lang);
 			prefix = "";
-			first = FALSE;
+			first = false;
 			if (mode == Replace)
 				mode = Add;
 		}
@@ -1576,18 +1652,18 @@ static void processLanguagesOption (
 	eFree (langs);
 }
 
-extern boolean processMapOption (
+extern bool processMapOption (
 			const char *const option, const char *const parameter)
 {
 	langType language;
 	const char* spec;
 	char* map_parameter;
-	boolean clear = FALSE;
+	bool clear = false;
 	char op;
 
 	language = getLanguageComponentInOption (option, "map-");
 	if (language == LANG_IGNORE)
-		return FALSE;
+		return false;
 
 	if (parameter == NULL || parameter [0] == '\0')
 		error (FATAL, "no parameter is given for %s", option);
@@ -1601,7 +1677,7 @@ extern boolean processMapOption (
 	else
 	{
 		op = '\0';
-		clear = TRUE;
+		clear = true;
 	}
 
 	if (clear)
@@ -1619,7 +1695,7 @@ extern boolean processMapOption (
 	map_parameter = eStrdup (spec);
 
 	if (op == '+')
-		addLanguageMap (language, map_parameter, FALSE);
+		addLanguageMap (language, map_parameter, false);
 	else if (op == '-')
 		removeLanguageMap (language, map_parameter);
 	else
@@ -1628,12 +1704,12 @@ extern boolean processMapOption (
 	eFree (map_parameter);
 	verbose ("\n");
 
-	return TRUE;
+	return true;
 }
 
 static void processLicenseOption (
-		const char *const option __unused__,
-		const char *const parameter __unused__)
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	printProgramIdentification ();
 	puts ("");
@@ -1659,7 +1735,7 @@ static void processListAliasesOption (
 }
 
 static void processListExtraOption (
-		const char *const option __unused__, const char *const parameter __unused__)
+		const char *const option CTAGS_ATTR_UNUSED, const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	printXtags ();
 	exit (0);
@@ -1684,7 +1760,7 @@ static void processListFileKindOption (
 static void processListKindsOption (
 		const char *const option, const char *const parameter)
 {
-	boolean print_all = (strcmp (option, "list-kinds-full") == 0)? TRUE: FALSE;
+	bool print_all = (strcmp (option, "list-kinds-full") == 0)? true: false;
 
 	if (parameter [0] == '\0' || strcasecmp (parameter, "all") == 0)
 		printLanguageKinds (LANG_AUTO, print_all);
@@ -1699,7 +1775,7 @@ static void processListKindsOption (
 	exit (0);
 }
 
-static void processListMapsOptionForType (const char *const __unused__ option,
+static void processListMapsOptionForType (const char *const option CTAGS_ATTR_UNUSED,
 					  const char *const  parameter,
 					  langmapType type)
 {
@@ -1729,23 +1805,23 @@ static void processListPatternsOption (const char *const option,
 }
 
 static void processListMapsOption (
-		const char *const __unused__ option,
-		const char *const __unused__ parameter)
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	processListMapsOptionForType (option, parameter, LMAP_ALL);
 }
 
 static void processListLanguagesOption (
-		const char *const option __unused__,
-		const char *const parameter __unused__)
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	printLanguageList ();
 	exit (0);
 }
 
 static void processListPseudoTagsOptions (
-		const char *const option __unused__,
-		const char *const parameter __unused__)
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	int i;
 	for (i = 0; i < PTAG_COUNT; i++)
@@ -1754,14 +1830,14 @@ static void processListPseudoTagsOptions (
 }
 
 static void processListRegexFlagsOptions (
-		const char *const option __unused__,
-		const char *const parameter __unused__)
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	printRegexFlags ();
 	exit (0);
 }
 
-static void processListRolesOptions (const char *const option __unused__,
+static void processListRolesOptions (const char *const option CTAGS_ATTR_UNUSED,
 				     const char *const parameter)
 {
 	const char* sep;
@@ -1775,20 +1851,20 @@ static void processListRolesOptions (const char *const option __unused__,
 		exit (0);
 	}
 
-	sep = strchr (parameter, ':');
+	sep = strchr (parameter, '.');
 
 	if (sep == NULL || sep [1] == '\0')
 	{
 		vString* vstr = vStringNewInit (parameter);
-		vStringCatS (vstr, (sep? "*": ":*"));
+		vStringCatS (vstr, (sep? "*": ".*"));
 		processListRolesOptions (option, vStringValue (vstr));
 		/* The control should never reache here. */
 	}
 
 	kindletters = sep + 1;
-	if (strncmp (parameter, "all:", 4) == 0
-	    || strncmp (parameter, "*:", 1) == 0
-	    || strncmp (parameter, ":", 1) == 0)
+	if (strncmp (parameter, "all.", 4) == 0
+	    || strncmp (parameter, "*.", 1) == 0
+	    || strncmp (parameter, ".", 1) == 0)
 		lang = LANG_AUTO;
 	else
 	{
@@ -1816,7 +1892,7 @@ static void verboseSearchPathList (const searchPathList* pathList, const char *c
 }
 
 static vString* expandOnSearchPathList (searchPathList *pathList, const char* leaf,
-					boolean (* check) (const char *const))
+					bool (* check) (const char *const))
 {
 	unsigned int i;
 
@@ -1836,7 +1912,7 @@ static vString* expandOnSearchPathList (searchPathList *pathList, const char* le
 	return NULL;
 }
 
-static boolean isDirectory (const char *const dirName)
+static bool isDirectory (const char *const dirName)
 {
 	fileStatus *status = eStat (dirName);
 	return status->exists && status->isDirectory;
@@ -1928,38 +2004,58 @@ static void processOptionFile (
 		vStringDelete (vpath);
 }
 
-static void processPseudoTags (const char *const option __unused__,
+static void processOutputFormat (const char *const option CTAGS_ATTR_UNUSED,
+				 const char *const parameter)
+{
+	if (parameter [0] == '\0')
+		error (FATAL, "no output format name supplied for \"%s\"", option);
+
+	if (strcmp (parameter, "ctags") == 0)
+		;
+	else if (strcmp (parameter, "etags") == 0)
+		setEtagsMode ();
+	else if (strcmp (parameter, "xref") == 0)
+		setXrefMode ();
+#ifdef HAVE_JANSSON
+	else if (strcmp (parameter, "json") == 0)
+		setJsonMode ();
+#endif
+	else
+		error (FATAL, "unknown output format name supplied for \"%s=%s\"", option, parameter);
+}
+
+static void processPseudoTags (const char *const option CTAGS_ATTR_UNUSED,
 			       const char *const parameter)
 {
 	const char *p = parameter;
-	boolean s;
+	bool s;
 	ptagType t;
 
 	if (*p == '*')
 	{
 		int i;
 		for (i = 0; i < PTAG_COUNT; i++)
-			enablePtag (i, TRUE);
+			enablePtag (i, true);
 		return;
 	}
 
 	if (*p == '-')
 	{
-		s= FALSE;
+		s= false;
 		p++;
 	}
 	else if (*p == '+')
 	{
-		s = TRUE;
+		s = true;
 		p++;
 	}
 	else
 	{
 		unsigned int i;
 
-		s = TRUE;
+		s = true;
 		for (i = 0; i < PTAG_COUNT; i++)
-			enablePtag (i, FALSE);
+			enablePtag (i, false);
 		if (*p == '\0')
 			return;
 	}
@@ -2010,12 +2106,12 @@ static void processHeaderListOption (const int option, const char *parameter)
 		installHeaderListDefaults ();
 	else
 	{
-		boolean clear = TRUE;
+		bool clear = true;
 
 		if (parameter [0] == '+')
 		{
 			++parameter;
-			clear = FALSE;
+			clear = false;
 		}
 		if (Option.headerExt == NULL)
 			Option.headerExt = stringListNew ();
@@ -2030,59 +2126,85 @@ static void processHeaderListOption (const int option, const char *parameter)
 
 /*  Determines whether or not "name" should be ignored, per the ignore list.
  */
-extern boolean isIgnoreToken (
-		const char *const name, boolean *const pIgnoreParens,
-		const char **const replacement)
+extern const ignoredTokenInfo * isIgnoreToken(const char * name)
 {
-	boolean result = FALSE;
+	if(!Option.ignore)
+		return NULL;
 
-	if (Option.ignore != NULL)
-	{
-		const size_t nameLen = strlen (name);
-		unsigned int i;
-
-		if (pIgnoreParens != NULL)
-			*pIgnoreParens = FALSE;
-
-		for (i = 0  ;  i < stringListCount (Option.ignore)  ;  ++i)
-		{
-			vString *token = stringListItem (Option.ignore, i);
-
-			if (strncmp (vStringValue (token), name, nameLen) == 0)
-			{
-				const size_t tokenLen = vStringLength (token);
-
-				if (nameLen == tokenLen)
-				{
-					result = TRUE;
-					break;
-				}
-				else if (tokenLen == nameLen + 1  &&
-						vStringChar (token, tokenLen - 1) == '+')
-				{
-					result = TRUE;
-					if (pIgnoreParens != NULL)
-						*pIgnoreParens = TRUE;
-					break;
-				}
-				else if (vStringChar (token, nameLen) == '=')
-				{
-					if (replacement != NULL)
-						*replacement = vStringValue (token) + nameLen + 1;
-					break;
-				}
-			}
-		}
-	}
-	return result;
+	return (const ignoredTokenInfo *)hashTableGetItem(Option.ignore,(char *)name);
 }
 
-static void saveIgnoreToken (vString *const ignoreToken)
+static void freeIgnoredTokenInfo(ignoredTokenInfo * info)
 {
-	if (Option.ignore == NULL)
-		Option.ignore = stringListNew ();
-	stringListAdd (Option.ignore, ignoreToken);
-	verbose ("    ignore token: %s\n", vStringValue (ignoreToken));
+	if(!info)
+		return;
+	if(info->replacement)
+		eFree(info->replacement);
+	eFree(info);
+}
+
+static void saveIgnoreToken(const char * ignoreToken)
+{
+	if(!ignoreToken)
+		return;
+
+	if(!Option.ignore)
+	{
+		Option.ignore = hashTableNew(
+				1024,
+				hashCstrhash,
+				hashCstreq,
+				free,
+				(void (*)(void *))freeIgnoredTokenInfo
+			);
+	}
+
+	const char * c = ignoreToken;
+	char cc = *c;
+	
+	const char * tokenBegin = c;
+	const char * tokenEnd = NULL;
+	const char * replacement = NULL;
+	bool ignoreFollowingParenthesis = false;
+
+	while(cc)
+	{
+		if(cc == '=')
+		{
+			if(!tokenEnd)
+				tokenEnd = c;
+			c++;
+			if(*c)
+				replacement = c;
+			break;
+		}
+		
+		if(cc == '+')
+		{
+			if(!tokenEnd)
+				tokenEnd = c;
+			ignoreFollowingParenthesis = true;
+		}
+		
+		c++;
+		cc = *c;
+	}
+
+	if(!tokenEnd)
+		tokenEnd = c;
+	
+	if(tokenEnd <= tokenBegin)
+		return;
+
+	
+	ignoredTokenInfo * info = (ignoredTokenInfo *)eMalloc(sizeof(ignoredTokenInfo));
+	
+	info->ignoreFollowingParenthesis = ignoreFollowingParenthesis;
+	info->replacement = replacement ? eStrdup(replacement) : NULL;
+
+	hashTablePutItem(Option.ignore,eStrndup(tokenBegin,tokenEnd - tokenBegin),info);
+
+	verbose ("    ignore token: %s\n", ignoreToken);
 }
 
 static void readIgnoreList (const char *const list)
@@ -2092,9 +2214,7 @@ static void readIgnoreList (const char *const list)
 
 	while (token != NULL)
 	{
-		vString *const entry = vStringNewInit (token);
-
-		saveIgnoreToken (entry);
+		saveIgnoreToken (token);
 		token = strtok (NULL, IGNORE_SEPARATORS);
 	}
 	eFree (newList);
@@ -2105,10 +2225,17 @@ static void addIgnoreListFromFile (const char *const fileName)
 	stringList* tokens = stringListNewFromFile (fileName);
 	if (tokens == NULL)
 		error (FATAL | PERROR, "cannot open \"%s\"", fileName);
-	if (Option.ignore == NULL)
-		Option.ignore = tokens;
-	else
-		stringListCombine (Option.ignore, tokens);
+
+	int c = stringListCount(tokens);
+	int i;
+
+	for(i=0;i<c;i++)
+	{
+		vString * s = stringListItem(tokens,i);
+		saveIgnoreToken(vStringValue(s));
+	}
+
+	stringListDelete(tokens);
 }
 
 static void processIgnoreOption (const char *const list)
@@ -2124,7 +2251,11 @@ static void processIgnoreOption (const char *const list)
 #endif
 	else if (strcmp (list, "-") == 0)
 	{
-		freeList (&Option.ignore);
+		if(Option.ignore)
+		{
+			hashTableDelete(Option.ignore);
+			Option.ignore = NULL;
+		}
 		verbose ("    clearing list\n");
 	}
 	else
@@ -2138,24 +2269,24 @@ static void processEchoOption (const char *const option, const char *const param
 	notice ("%s", parameter);
 }
 
-static void processForceQuitOption (const char *const option __unused__,
+static void processForceQuitOption (const char *const option CTAGS_ATTR_UNUSED,
 				    const char *const parameter)
 {
-	long s = 0;
-	if (parameter != NULL && parameter[0] != '\0')
-		s = strtol (parameter, NULL, 0);
+	int s;
+	if (parameter == NULL || parameter[0] == '\0' || !strToInt(parameter, 0, &s))
+		s = 0;
 	exit (s);
 }
 
 static void processVersionOption (
-		const char *const option __unused__,
-		const char *const parameter __unused__)
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
 {
 	printProgramIdentification ();
 	exit (0);
 }
 
-static void processXformatOption (const char *const option __unused__,
+static void processXformatOption (const char *const option CTAGS_ATTR_UNUSED,
 				  const char *const parameter)
 {
 	if (Option.customXfmt)
@@ -2182,7 +2313,7 @@ static void resetLibexecPathList (void)
 }
 
 static void appendToPathList (const char *const dir, const char *const subdir, searchPathList* const pathList, const char *const varname,
-				   boolean report_in_verboe, const char* const action)
+				   bool report_in_verboe, const char* const action)
 {
 	char* path;
 
@@ -2193,7 +2324,7 @@ static void appendToPathList (const char *const dir, const char *const subdir, s
 }
 
 static void prependToPathList (const char *const dir, const char *const subdir, searchPathList* const pathList, const char *const varname,
-				    boolean report_in_verboe, const char* const action)
+				    bool report_in_verboe, const char* const action)
 {
 	stringListReverse (pathList);
 	appendToPathList(dir, subdir, pathList, varname, report_in_verboe, action);
@@ -2201,32 +2332,32 @@ static void prependToPathList (const char *const dir, const char *const subdir, 
 
 }
 
-static void appendToDataPathList (const char *const dir, boolean from_cmdline)
+static void appendToDataPathList (const char *const dir, bool from_cmdline)
 {
 	appendToPathList (dir, SUBDIR_OPTLIB, OptlibPathList, "OptlibPathList",
 			       from_cmdline, from_cmdline? "Append": NULL);
 
 	if (!from_cmdline)
 		appendToPathList (dir, SUBDIR_PRELOAD, PreloadPathList, "PreloadPathList",
-				       FALSE, NULL);
+				       false, NULL);
 }
 
-static void appendToLibexecPathList (const char *const dir, boolean from_cmdline)
+static void appendToLibexecPathList (const char *const dir, bool from_cmdline)
 {
 	appendToPathList (dir, SUBDIR_DRIVERS, DriversPathList, "DriversPathList",
 			       from_cmdline, from_cmdline? "Append": NULL);
 }
 
-static void prependToDataPathList (const char *const dir, boolean from_cmdline)
+static void prependToDataPathList (const char *const dir, bool from_cmdline)
 {
 	prependToPathList (dir, SUBDIR_OPTLIB, OptlibPathList, "OptlibPathList",
 				from_cmdline, from_cmdline? "Prepend": NULL);
 	if (!from_cmdline)
 		prependToPathList (dir, SUBDIR_PRELOAD, PreloadPathList, "PreloadPathList",
-					FALSE, NULL);
+					false, NULL);
 }
 
-static void prependToLibexecPathList (const char *const dir, boolean from_cmdline)
+static void prependToLibexecPathList (const char *const dir, bool from_cmdline)
 {
 	prependToPathList (dir, SUBDIR_DRIVERS, DriversPathList, "DriversPathList",
 			   from_cmdline, from_cmdline? "Prepend": NULL);
@@ -2243,7 +2374,7 @@ static void processDataDir (
 	if (parameter[0] == '+')
 	{
 		path = parameter + 1;
-		prependToDataPathList (path, TRUE);
+		prependToDataPathList (path, true);
 	}
 	else if (!strcmp (parameter, "NONE"))
 		resetDataPathList ();
@@ -2251,7 +2382,7 @@ static void processDataDir (
 	{
 		resetDataPathList ();
 		path = parameter;
-		appendToDataPathList (path, TRUE);
+		appendToDataPathList (path, true);
 	}
 }
 
@@ -2266,7 +2397,7 @@ static void processLibexecDir (const char *const option,
 	if (parameter[0] == '+')
 	{
 		path = parameter + 1;
-		prependToLibexecPathList (path, TRUE);
+		prependToLibexecPathList (path, true);
 	}
 	else if (!strcmp (parameter, "NONE"))
 		resetLibexecPathList ();
@@ -2274,7 +2405,7 @@ static void processLibexecDir (const char *const option,
 	{
 		resetLibexecPathList ();
 		path = parameter;
-		appendToLibexecPathList (path, TRUE);
+		appendToLibexecPathList (path, true);
 	}
 }
 
@@ -2301,11 +2432,20 @@ static void processMaxRecursionDepthOption (const char *const option, const char
 	Option.maxRecursionDepth = atol(parameter);
 }
 
-static boolean* redirectToXtag(const booleanOption *const option)
+static void processPatternLengthLimit(const char *const option, const char *const parameter)
+{
+	if (parameter == NULL || parameter[0] == '\0')
+		error (FATAL, "A parameter is needed after \"%s\" option", option);
+
+	if (!strToUInt(parameter, 0, &Option.patternLengthLimit))
+		error (FATAL, "-%s: Invalid pattern length limit", option);
+}
+
+static bool* redirectToXtag(const booleanOption *const option)
 {
 	/* WARNING/TODO: This function breaks capsulization. */
 	xtagType t = (xtagType)option->pValue;
-	boolean default_value = isXtagEnabled (t);
+	bool default_value = isXtagEnabled (t);
 
 	enableXtag (t, default_value);
 
@@ -2317,92 +2457,93 @@ static boolean* redirectToXtag(const booleanOption *const option)
  */
 
 static parametricOption ParametricOptions [] = {
-	{ "config-filename",		processConfigFilenameOption,	TRUE,   STAGE_ANY },
-	{ "data-dir",               processDataDir,                 FALSE,  STAGE_ANY },
-	{ "etags-include",          processEtagsInclude,            FALSE,  STAGE_ANY },
-	{ "exclude",                processExcludeOption,           FALSE,  STAGE_ANY },
-	{ "excmd",                  processExcmdOption,             FALSE,  STAGE_ANY },
-	{ "extra",                  processExtraTagsOption,         FALSE,  STAGE_ANY },
-	{ "fields",                 processFieldsOption,            FALSE,  STAGE_ANY },
-	{ "filter-terminator",      processFilterTerminatorOption,  TRUE,   STAGE_ANY },
-	{ "format",                 processFormatOption,            TRUE,   STAGE_ANY },
-	{ "help",                   processHelpOption,              TRUE,   STAGE_ANY },
+	{ "config-filename",		processConfigFilenameOption,	true,   STAGE_ANY },
+	{ "data-dir",               processDataDir,                 false,  STAGE_ANY },
+	{ "etags-include",          processEtagsInclude,            false,  STAGE_ANY },
+	{ "exclude",                processExcludeOption,           false,  STAGE_ANY },
+	{ "excmd",                  processExcmdOption,             false,  STAGE_ANY },
+	{ "extra",                  processExtraTagsOption,         false,  STAGE_ANY },
+	{ "fields",                 processFieldsOption,            false,  STAGE_ANY },
+	{ "filter-terminator",      processFilterTerminatorOption,  true,   STAGE_ANY },
+	{ "format",                 processFormatOption,            true,   STAGE_ANY },
+	{ "help",                   processHelpOption,              true,   STAGE_ANY },
 #ifdef HAVE_ICONV
-	{ "input-encoding",         processInputEncodingOption,     FALSE,  STAGE_ANY },
-	{ "output-encoding",        processOutputEncodingOption,    FALSE,  STAGE_ANY },
+	{ "input-encoding",         processInputEncodingOption,     false,  STAGE_ANY },
+	{ "output-encoding",        processOutputEncodingOption,    false,  STAGE_ANY },
 #endif
-	{ "lang",                   processLanguageForceOption,     FALSE,  STAGE_ANY },
-	{ "language",               processLanguageForceOption,     FALSE,  STAGE_ANY },
-	{ "language-force",         processLanguageForceOption,     FALSE,  STAGE_ANY },
-	{ "languages",              processLanguagesOption,         FALSE,  STAGE_ANY },
-	{ "langdef",                processLanguageDefineOption,    FALSE,  STAGE_ANY },
-	{ "langmap",                processLanguageMapOption,       FALSE,  STAGE_ANY },
-	{ "libexec-dir",            processLibexecDir,              FALSE,  STAGE_ANY },
-	{ "license",                processLicenseOption,           TRUE,   STAGE_ANY },
-	{ "list-aliases",           processListAliasesOption,       TRUE,   STAGE_ANY },
-	{ "list-extensions",        processListExtensionsOption,    TRUE,   STAGE_ANY },
-	{ "list-extra",             processListExtraOption,        TRUE,   STAGE_ANY },
-	{ "list-features",          processListFeaturesOption,      TRUE,   STAGE_ANY },
-	{ "list-fields",            processListFieldsOption,        TRUE,   STAGE_ANY },
-	{ "list-file-kind",         processListFileKindOption,      TRUE,   STAGE_ANY },
-	{ "list-kinds",             processListKindsOption,         TRUE,   STAGE_ANY },
-	{ "list-kinds-full",       processListKindsOption,         TRUE,   STAGE_ANY },
-	{ "list-languages",         processListLanguagesOption,     TRUE,   STAGE_ANY },
-	{ "list-maps",              processListMapsOption,          TRUE,   STAGE_ANY },
-	{ "list-patterns",          processListPatternsOption,      TRUE,   STAGE_ANY },
-	{ "list-pseudo-tags",       processListPseudoTagsOptions,   TRUE,   STAGE_ANY },
-	{ "list-regex-flags",       processListRegexFlagsOptions,   TRUE,   STAGE_ANY },
-	{ "_list-roles",            processListRolesOptions,        TRUE,   STAGE_ANY },
-	{ "pattern-length-limit",   processPatternLengthLimitOption,TRUE,   STAGE_ANY },
-	{ "maxdepth",               processMaxRecursionDepthOption, TRUE,   STAGE_ANY },
-	{ "options",                processOptionFile,              FALSE,  STAGE_ANY },
-	{ "pseudo-tags",            processPseudoTags,              FALSE,  STAGE_ANY },
-	{ "sort",                   processSortOption,              TRUE,   STAGE_ANY },
-	{ "version",                processVersionOption,           TRUE,   STAGE_ANY },
-	{ "_echo",                  processEchoOption,              FALSE,  STAGE_ANY },
-	{ "_force-quit",            processForceQuitOption,         FALSE,  STAGE_ANY },
-	{ "_xformat",               processXformatOption,           FALSE,  STAGE_ANY },
+	{ "lang",                   processLanguageForceOption,     false,  STAGE_ANY },
+	{ "language",               processLanguageForceOption,     false,  STAGE_ANY },
+	{ "language-force",         processLanguageForceOption,     false,  STAGE_ANY },
+	{ "languages",              processLanguagesOption,         false,  STAGE_ANY },
+	{ "langdef",                processLanguageDefineOption,    false,  STAGE_ANY },
+	{ "langmap",                processLanguageMapOption,       false,  STAGE_ANY },
+	{ "libexec-dir",            processLibexecDir,              false,  STAGE_ANY },
+	{ "license",                processLicenseOption,           true,   STAGE_ANY },
+	{ "list-aliases",           processListAliasesOption,       true,   STAGE_ANY },
+	{ "list-extensions",        processListExtensionsOption,    true,   STAGE_ANY },
+	{ "list-extra",             processListExtraOption,        true,   STAGE_ANY },
+	{ "list-features",          processListFeaturesOption,      true,   STAGE_ANY },
+	{ "list-fields",            processListFieldsOption,        true,   STAGE_ANY },
+	{ "list-file-kind",         processListFileKindOption,      true,   STAGE_ANY },
+	{ "list-kinds",             processListKindsOption,         true,   STAGE_ANY },
+	{ "list-kinds-full",        processListKindsOption,         true,   STAGE_ANY },
+	{ "list-languages",         processListLanguagesOption,     true,   STAGE_ANY },
+	{ "list-maps",              processListMapsOption,          true,   STAGE_ANY },
+	{ "list-patterns",          processListPatternsOption,      true,   STAGE_ANY },
+	{ "list-pseudo-tags",       processListPseudoTagsOptions,   true,   STAGE_ANY },
+	{ "list-regex-flags",       processListRegexFlagsOptions,   true,   STAGE_ANY },
+	{ "_list-roles",            processListRolesOptions,        true,   STAGE_ANY },
+	{ "maxdepth",               processMaxRecursionDepthOption, true,   STAGE_ANY },
+	{ "options",                processOptionFile,              false,  STAGE_ANY },
+	{ "output-format",          processOutputFormat,            true,   STAGE_ANY },
+	{ "pattern-length-limit",   processPatternLengthLimit,      true,   STAGE_ANY },
+	{ "pseudo-tags",            processPseudoTags,              false,  STAGE_ANY },
+	{ "sort",                   processSortOption,              true,   STAGE_ANY },
+	{ "version",                processVersionOption,           true,   STAGE_ANY },
+	{ "_echo",                  processEchoOption,              false,  STAGE_ANY },
+	{ "_force-quit",            processForceQuitOption,         false,  STAGE_ANY },
+	{ "_xformat",               processXformatOption,           false,  STAGE_ANY },
 };
 
 static booleanOption BooleanOptions [] = {
-	{ "append",         &Option.append,                 TRUE,  STAGE_ANY },
-	{ "file-scope",     ((boolean *)XTAG_FILE_SCOPE),   FALSE, STAGE_ANY, redirectToXtag },
-	{ "file-tags",      ((boolean *)XTAG_FILE_NAMES),   FALSE, STAGE_ANY, redirectToXtag },
-	{ "filter",         &Option.filter,                 TRUE,  STAGE_ANY },
-	{ "guess-language-eagerly", &Option.guessLanguageEagerly, FALSE, STAGE_ANY },
-	{ "if0",            &Option.if0,                    FALSE, STAGE_ANY },
-	{ "line-directives",&Option.lineDirectives,         FALSE, STAGE_ANY },
-	{ "links",          &Option.followLinks,            FALSE, STAGE_ANY },
-	{ "machinable",     &Option.machinable,             TRUE,  STAGE_ANY },
-	{ "put-field-prefix", &Option.putFieldPrefix,       FALSE, STAGE_ANY },
-	{ "print-language", &Option.printLanguage,          TRUE,  STAGE_ANY },
-	{ "quiet",          &Option.quiet,                  FALSE, STAGE_ANY },
+	{ "append",         &Option.append,                 true,  STAGE_ANY },
+	{ "file-scope",     ((bool *)XTAG_FILE_SCOPE),   false, STAGE_ANY, redirectToXtag },
+	{ "file-tags",      ((bool *)XTAG_FILE_NAMES),   false, STAGE_ANY, redirectToXtag },
+	{ "filter",         &Option.filter,                 true,  STAGE_ANY },
+	{ "guess-language-eagerly", &Option.guessLanguageEagerly, false, STAGE_ANY },
+	{ "if0",            &Option.if0,                    false, STAGE_ANY },
+	{ "line-directives",&Option.lineDirectives,         false, STAGE_ANY },
+	{ "links",          &Option.followLinks,            false, STAGE_ANY },
+	{ "machinable",     &Option.machinable,             true,  STAGE_ANY },
+	{ "put-field-prefix", &Option.putFieldPrefix,       false, STAGE_ANY },
+	{ "print-language", &Option.printLanguage,          true,  STAGE_ANY },
+	{ "quiet",          &Option.quiet,                  false, STAGE_ANY },
 #ifdef RECURSE_SUPPORTED
-	{ "recurse",        &Option.recurse,                FALSE, STAGE_ANY },
+	{ "recurse",        &Option.recurse,                false, STAGE_ANY },
 #endif
-	{ "tag-relative",   &Option.tagRelative,            TRUE,  STAGE_ANY },
-	{ "totals",         &Option.printTotals,            TRUE,  STAGE_ANY },
-	{ "verbose",        &Option.verbose,                FALSE, STAGE_ANY },
-	{ "with-list-header", &Option.withListHeader,       TRUE,  STAGE_ANY },
-	{ "_allow-xcmd-in-homedir", &Option.allowXcmdInHomeDir, TRUE, ACCEPT(Etc)|ACCEPT(LocalEtc) },
-	{ "_fatal-warnings",&Option.fatalWarnings,          FALSE, STAGE_ANY },
+	{ "tag-relative",   &Option.tagRelative,            true,  STAGE_ANY },
+	{ "totals",         &Option.printTotals,            true,  STAGE_ANY },
+	{ "verbose",        &Option.verbose,                false, STAGE_ANY },
+	{ "with-list-header", &Option.withListHeader,       true,  STAGE_ANY },
+	{ "_allow-xcmd-in-homedir", &Option.allowXcmdInHomeDir, true, ACCEPT(Etc)|ACCEPT(LocalEtc) },
+	{ "_fatal-warnings",&Option.fatalWarnings,          false, STAGE_ANY },
 };
 
 /*
  *  Generic option parsing
  */
 
-static void checkOptionOrder (const char* const option, boolean longOption)
+static void checkOptionOrder (const char* const option, bool longOption)
 {
 	if (NonOptionEncountered)
 		error (FATAL, "-%s%s option may not follow a file name", longOption? "-": "", option);
 }
 
-static boolean processParametricOption (
+static bool processParametricOption (
 		const char *const option, const char *const parameter)
 {
 	const int count = sizeof (ParametricOptions) / sizeof (parametricOption);
-	boolean found = FALSE;
+	bool found = false;
 	int i;
 
 	for (i = 0  ;  i < count  &&  ! found  ;  ++i)
@@ -2410,7 +2551,7 @@ static boolean processParametricOption (
 		parametricOption* const entry = &ParametricOptions [i];
 		if (strcmp (option, entry->name) == 0)
 		{
-			found = TRUE;
+			found = true;
 			if (!(entry->acceptableStages & (1UL << Stage)))
 			{
 				error (WARNING, "Cannot use --%s option in %s",
@@ -2418,44 +2559,44 @@ static boolean processParametricOption (
 				break;
 			}
 			if (entry->initOnly)
-				checkOptionOrder (option, TRUE);
+				checkOptionOrder (option, true);
 			(entry->handler) (option, parameter);
 		}
 	}
 	return found;
 }
 
-static boolean getBooleanOption (
+static bool getBooleanOption (
 		const char *const option, const char *const parameter)
 {
-	boolean selection = TRUE;
+	bool selection = true;
 
 	if (parameter [0] == '\0')
-		selection = TRUE;
+		selection = true;
 	else if (isFalse (parameter))
-		selection = FALSE;
+		selection = false;
 	else if (isTrue (parameter))
-		selection = TRUE;
+		selection = true;
 	else
 		error (FATAL, "Invalid value for \"%s\" option", option);
 
 	return selection;
 }
 
-static boolean processBooleanOption (
+static bool processBooleanOption (
 		const char *const option, const char *const parameter)
 {
 	const int count = sizeof (BooleanOptions) / sizeof (booleanOption);
-	boolean found = FALSE;
+	bool found = false;
 	int i;
 
 	for (i = 0  ;  i < count  &&  ! found  ;  ++i)
 	{
 		booleanOption* const entry = &BooleanOptions [i];
-		boolean *slot;
+		bool *slot;
 		if (strcmp (option, entry->name) == 0)
 		{
-			found = TRUE;
+			found = true;
 			if (!(entry->acceptableStages & (1UL << Stage)))
 			{
 				error (WARNING, "Cannot use --%s option in %s",
@@ -2463,7 +2604,7 @@ static boolean processBooleanOption (
 				break;
 			}
 			if (entry->initOnly)
-				checkOptionOrder (option, TRUE);
+				checkOptionOrder (option, true);
 			if (entry->redirect)
 				slot = entry->redirect (entry);
 			else
@@ -2472,6 +2613,118 @@ static boolean processBooleanOption (
 		}
 	}
 	return found;
+}
+
+static void enableLanguageField (langType language, const char *field, bool mode)
+{
+
+	fieldType t;
+
+	t = getFieldTypeForNameAndLanguage (field, language);
+	if (t == FIELD_UNKNOWN)
+		error(FATAL, "no such field: \'%s\'", field);
+	enableField (t, mode, (language != LANG_AUTO));
+	if (language == LANG_AUTO)
+	{
+		fieldType ftype_next = t;
+
+		while ((ftype_next = nextSiblingField (ftype_next)) != FIELD_UNKNOWN)
+			enableField (ftype_next, mode, (language != LANG_AUTO));
+	}
+}
+
+static bool processLangSpecificFieldsOption (const char *const option,
+						const char *const parameter)
+{
+#define PREFIX "fields-"
+#define PREFIX_LEN strlen(PREFIX)
+	const char* lang;
+	size_t len;
+	langType language = LANG_IGNORE;
+	const char *p = parameter;
+	int c;
+	static vString * longName;
+	bool mode = true;
+	const char *f;
+	bool inLongName = false;
+
+	if ( strncmp (option, PREFIX, PREFIX_LEN) != 0 )
+		return false;
+
+	lang = option + PREFIX_LEN;
+	len = strlen (lang);
+	if (len == 0)
+		error (FATAL, "No language given in \"%s\" option", option);
+	else if (len == 1 && lang[0] == '*')
+		language = LANG_AUTO;
+	else
+		language = getNamedLanguage (lang, len);
+
+	if (language == LANG_IGNORE)
+	{
+		error (WARNING, "Unknown language: %s (ignoring \"--%s\")", lang, option);
+		/* The option is consumed in tihs function. */
+		return true;
+	}
+
+	initializeParser (language);
+
+	if (*p == '*')
+	{
+		resetFieldsOption (language, true);
+		p++;
+	}
+	else if (*p == '{')
+		resetFieldsOption (language, false);
+	else if (*p != '+' && *p != '-')
+		error (WARNING, "Wrong per language field specification: %s", p);
+
+	longName = vStringNewOrClear (longName);
+	while ((c = *p++) != '\0')
+	{
+		switch (c)
+		{
+		case '+':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = true;
+			break;
+		case '-':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = false;
+			break;
+		case '{':
+			if (inLongName)
+				error (FATAL,
+				       "unexpected character in field specification: \'%c\'",
+				       c);
+			inLongName = true;
+			break;
+		case '}':
+			if (!inLongName)
+				error (FATAL,
+				       "unexpected character in field specification: \'%c\'",
+				       c);
+
+			f = vStringValue (longName);
+			enableLanguageField (language, f, mode);
+			inLongName = false;
+			vStringClear (longName);
+			break;
+		default:
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				error (FATAL,
+				       "only long name can be used in per language field spec: \'%c\'",
+				       c);
+			break;
+		}
+	}
+	return true;
 }
 
 static void processLongOption (
@@ -2487,6 +2740,8 @@ static void processLongOption (
 
 	if (processBooleanOption (option, parameter))
 		;
+	else if (processLangSpecificFieldsOption(option, parameter))
+		 ;
 	else if (processParametricOption (option, parameter))
 		;
 	else if (processKindOption (option, parameter))
@@ -2528,8 +2783,8 @@ static void processShortOption (
 			exit (0);
 			break;
 		case 'a':
-			checkOptionOrder (option, FALSE);
-			Option.append = TRUE;
+			checkOptionOrder (option, false);
+			Option.append = true;
 			break;
 #ifdef DEBUG
 		case 'b':
@@ -2538,21 +2793,23 @@ static void processShortOption (
 			Option.breakLine = atol (parameter);
 			break;
 		case 'D':
-			Option.debugLevel = strtol (parameter, NULL, 0);
+			if (!strToLong(parameter, 0, &Option.debugLevel))
+				error (FATAL, "-%s: Invalid debug level", option);
+
 			if (debug (DEBUG_STATUS))
-				Option.verbose = TRUE;
+				Option.verbose = true;
 			break;
 #endif
 		case 'B':
-			Option.backward = TRUE;
+			Option.backward = true;
 			break;
 		case 'e':
-			checkOptionOrder (option, FALSE);
+			checkOptionOrder (option, false);
 			setEtagsMode ();
 			break;
 		case 'f':
 		case 'o':
-			checkOptionOrder (option, FALSE);
+			checkOptionOrder (option, false);
 			if (Option.tagFileName != NULL)
 			{
 				error (WARNING,
@@ -2565,10 +2822,10 @@ static void processShortOption (
 			Option.tagFileName = stringCopy (parameter);
 			break;
 		case 'F':
-			Option.backward = FALSE;
+			Option.backward = false;
 			break;
 		case 'G':
-			Option.guessLanguageEagerly = TRUE;
+			Option.guessLanguageEagerly = true;
 			break;
 		case 'h':
 			processHeaderListOption (*option, parameter);
@@ -2594,24 +2851,24 @@ static void processShortOption (
 			break;
 		case 'R':
 #ifdef RECURSE_SUPPORTED
-			Option.recurse = TRUE;
+			Option.recurse = true;
 #else
 			error (WARNING, "-%s option not supported on this host", option);
 #endif
 			break;
 		case 'u':
-			checkOptionOrder (option, FALSE);
+			checkOptionOrder (option, false);
 			Option.sorted = SO_UNSORTED;
 			break;
 		case 'V':
-			Option.verbose = TRUE;
+			Option.verbose = true;
 			break;
 		case 'w':
 			/* silently ignored */
 			break;
 		case 'x':
-			checkOptionOrder (option, FALSE);
-			Option.xref = TRUE;
+			checkOptionOrder (option, false);
+			setXrefMode ();
 			break;
 		default:
 			error (FATAL, "Unknown option: -%s", option);
@@ -2642,7 +2899,7 @@ static void parseOptions (cookedArgs* const args)
 	while (! cArgOff (args)  &&  cArgIsOption (args))
 		parseOption (args);
 	if (! cArgOff (args)  &&  ! cArgIsOption (args))
-		NonOptionEncountered = TRUE;
+		NonOptionEncountered = true;
 }
 
 extern void parseCmdlineOptions (cookedArgs* const args)
@@ -2651,19 +2908,19 @@ extern void parseCmdlineOptions (cookedArgs* const args)
 	parseOptions (args);
 }
 
-static boolean checkSameFile (const char *const fileName, void * userData)
+static bool checkSameFile (const char *const fileName, void * userData)
 {
 	return isSameFile ((const char* const) userData, fileName);
 }
 
-static boolean parseFileOptions (const char* const fileName)
+static bool parseFileOptions (const char* const fileName)
 {
-	boolean fileFound = FALSE;
+	bool fileFound = false;
 	const char* const format = "Considering option file %s: %s\n";
 	if (stringListHasTest (OptionFiles, checkSameFile, (void *) fileName))
 	{
 		verbose (format, fileName, "already considered");
-		fileFound = TRUE;
+		fileFound = true;
 	}
 	else
 	{
@@ -2681,7 +2938,7 @@ static boolean parseFileOptions (const char* const fileName)
 				error (WARNING, "Ignoring non-option in %s\n", fileName);
 			cArgDelete (args);
 			fclose (fp);
-			fileFound = TRUE;
+			fileFound = true;
 		}
 	}
 	return fileFound;
@@ -2701,7 +2958,7 @@ extern void previewFirstOption (cookedArgs* const args)
 				strcmp (args->parameter, "NONE") == 0)
 		{
 			notice ("No options will be read from files or environment");
-			SkipConfiguration = TRUE;
+			SkipConfiguration = true;
 			cArgForth (args);
 		}
 		else
@@ -2778,7 +3035,7 @@ static int accept_only_dot_ctags(const struct dirent* dent)
 	return 0;
 }
 
-static boolean parseAllConfigurationFilesOptionsInDirectory (const char* const dirName,
+static bool parseAllConfigurationFilesOptionsInDirectory (const char* const dirName,
 							     stringList* const already_loaded_files)
 {
 	struct dirent **dents;
@@ -2786,7 +3043,7 @@ static boolean parseAllConfigurationFilesOptionsInDirectory (const char* const d
 
 	n = scandir (dirName, &dents, ignore_dot_file, alphasort);
 	if (n < 0)
-		return FALSE;
+		return false;
 
 	for (i = 0; i < n; i++)
 	{
@@ -2812,13 +3069,13 @@ static boolean parseAllConfigurationFilesOptionsInDirectory (const char* const d
 		eFree (path);
 	}
 	free (dents);
-	return TRUE;
+	return true;
 }
 #else
-static boolean parseAllConfigurationFilesOptionsInDirectory (const char* const dirName,
+static bool parseAllConfigurationFilesOptionsInDirectory (const char* const dirName,
 							     stringList* const already_loaded_files)
 {
-	return FALSE;
+	return false;
 }
 #endif
 
@@ -2943,7 +3200,7 @@ static void installDataPathList (void)
 			if (needle)
 				*needle = '\0';
 
-			appendToDataPathList (dataPath, FALSE);
+			appendToDataPathList (dataPath, false);
 
 			if (needle)
 			{
@@ -2963,13 +3220,13 @@ static void installDataPathList (void)
 
 			ctags_d = combinePathAndFile (vStringValue (home), ".ctags.d");
 
-			appendToDataPathList (ctags_d, FALSE);
+			appendToDataPathList (ctags_d, false);
 			eFree (ctags_d);
 			vStringDelete (home);
 		}
 	}
 #ifdef PKGSYSCONFDIR
-	appendToDataPathList (PKGSYSCONFDIR, FALSE);
+	appendToDataPathList (PKGSYSCONFDIR, false);
 #endif
 }
 
@@ -2989,7 +3246,7 @@ static void installLibexecPathList (void)
 			if (needle)
 				*needle = '\0';
 
-			appendToDataPathList (libexecPath, FALSE);
+			appendToDataPathList (libexecPath, false);
 
 			if (needle)
 			{
@@ -3009,14 +3266,14 @@ static void installLibexecPathList (void)
 
 			ctags_d = combinePathAndFile (vStringValue (home), ".ctags.d");
 
-			appendToLibexecPathList (ctags_d, FALSE);
+			appendToLibexecPathList (ctags_d, false);
 			eFree (ctags_d);
 			vStringDelete (home);
 		}
 	}
 
 #ifdef PKGLIBEXECDIR
-	appendToLibexecPathList (PKGLIBEXECDIR, FALSE);
+	appendToLibexecPathList (PKGLIBEXECDIR, false);
 #endif
 }
 
@@ -3098,6 +3355,9 @@ extern void initOptions (void)
 	processExcludeOption (NULL, "*.gcda");
 
 	processExcludeOption (NULL, "*.class");
+
+	processExcludeOption (NULL, "*.pyc");
+	processExcludeOption (NULL, "*.pyo");
 }
 
 extern void freeOptionResources (void)
@@ -3107,7 +3367,11 @@ extern void freeOptionResources (void)
 	freeString (&Option.filterTerminator);
 
 	freeList (&Excluded);
-	freeList (&Option.ignore);
+	if(Option.ignore)
+	{
+		hashTableDelete(Option.ignore);
+		Option.ignore = NULL;
+	}
 	freeList (&Option.headerExt);
 	freeList (&Option.etagsInclude);
 
@@ -3117,5 +3381,3 @@ extern void freeOptionResources (void)
 
 	freeList (&OptionFiles);
 }
-
-/* vi:set tabstop=4 shiftwidth=4: */
