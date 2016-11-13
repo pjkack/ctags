@@ -432,7 +432,7 @@ static const char *renderFieldInput (const tagEntryInfo *const tag, const char *
 
 	if (Option.lineDirectives && tag->sourceFileName)
 		f = tag->sourceFileName;
-	return renderEscapedString (f, tag, b);
+	return f; //renderEscapedString (f, tag, b); TEMP fix: see https://github.com/universal-ctags/ctags/issues/815
 }
 
 static const char *renderFieldSignature (const tagEntryInfo *const tag, const char *value CTAGS_ATTR_UNUSED, vString* b)
