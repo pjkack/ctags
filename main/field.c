@@ -466,7 +466,7 @@ static const char *renderFieldInput (const tagEntryInfo *const tag, const char *
 
 	if (Option.lineDirectives && tag->sourceFileName)
 		f = tag->sourceFileName;
-	return f; //renderEscapedString (f, tag, b); TEMP fix: see https://github.com/universal-ctags/ctags/issues/815
+	return renderEscapedString (f, tag, b);
 }
 
 static const char *renderFieldInputNoEscape (const tagEntryInfo *const tag, const char *value, vString* b,
