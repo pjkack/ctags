@@ -162,9 +162,7 @@ static void rememberMaxLengths (const size_t nameLength, const size_t lineLength
 
 static void addCommonPseudoTags (void)
 {
-	int i;
-
-	for (i = 0; i < PTAG_COUNT; i++)
+	for (int i = 0; i < PTAG_COUNT; i++)
 	{
 		if (isPtagCommonInParsers (i))
 			makePtagIfEnabled (i, NULL);
@@ -712,7 +710,7 @@ extern char *readLineFromBypassAnyway (vString *const vLine, const tagEntryInfo 
 /*  Truncates the text line containing the tag at the character following the
  *  tag, providing a character which designates the end of the tag.
  */
-extern void truncateTagLine (
+extern void truncateTagLineAfterTag (
 		char *const line, const char *const token, const bool discardNewline)
 {
 	char *p = strstr (line, token);
@@ -804,7 +802,7 @@ extern void getTagScopeInformation (tagEntryInfo *const tag,
 }
 
 
-extern int   makePatternStringCommon (const tagEntryInfo *const tag,
+static int   makePatternStringCommon (const tagEntryInfo *const tag,
 				      int putc_func (char , void *),
 				      int puts_func (const char* , void *),
 				      void *output)
@@ -824,21 +822,21 @@ extern int   makePatternStringCommon (const tagEntryInfo *const tag,
 	static vString *cached_pattern;
 	static MIOPos   cached_location;
 	if (TagFile.patternCacheValid
-	    && (! tag->truncateLine)
+	    && (! tag->truncateLineAfterTag)
 	    && (memcmp (&tag->filePosition, &cached_location, sizeof(MIOPos)) == 0))
 		return puts_func (vStringValue (cached_pattern), output);
 
 	line = readLineFromBypass (TagFile.vLine, tag->filePosition, NULL);
 	if (line == NULL)
 		error (FATAL, "could not read tag line from %s at line %lu", getInputFileName (),tag->lineNumber);
-	if (tag->truncateLine)
-		truncateTagLine (line, tag->name, false);
+	if (tag->truncateLineAfterTag)
+		truncateTagLineAfterTag (line, tag->name, false);
 
 	line_len = strlen (line);
 	searchChar = Option.backward ? '?' : '/';
 	terminator = (bool) (line [line_len - 1] == '\n') ? "$": "";
 
-	if (!tag->truncateLine)
+	if (!tag->truncateLineAfterTag)
 	{
 		making_cache = true;
 		cached_pattern = vStringNewOrClear (cached_pattern);
@@ -923,8 +921,6 @@ static void recordTagEntryInQueue (const tagEntryInfo *const tag, tagEntryInfo* 
 
 	if (slot->pattern)
 		slot->pattern = eStrdup (slot->pattern);
-	else if (!slot->lineNumberEntry)
-		slot->pattern = makePatternString (slot);
 
 	slot->inputFileName = eStrdup (slot->inputFileName);
 	slot->name = eStrdup (slot->name);

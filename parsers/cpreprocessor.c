@@ -51,6 +51,7 @@ typedef struct sConditionalInfo {
 	bool singleBranch;       /* choose only one branch */
 	bool branchChosen;       /* branch already selected */
 	bool ignoring;           /* current ignore state */
+	int enterExternalParserBlockNestLevel;          /* the parser state when entering this conditional: used only by cxx */
 } conditionalInfo;
 
 enum eState {
@@ -131,10 +132,28 @@ static kindOption CPreProKinds [] = {
 
 static bool doesExaminCodeWithInIf0Branch;
 
+/*
+* CXX parser state. This is stored at the beginning of a conditional.
+* If at the exit of the conditional the state is changed then we assume
+* that no further branches should be followed.
+*/
+static int externalParserBlockNestLevel;
+
 
 /*  Use brace formatting to detect end of block.
  */
 static bool BraceFormat = false;
+
+void cppPushExternalParserBlock()
+{
+	externalParserBlockNestLevel++;
+}
+
+void cppPopExternalParserBlock()
+{
+	externalParserBlockNestLevel--;
+}
+
 
 static cppState Cpp = {
 	LANG_IGNORE,
@@ -183,6 +202,10 @@ extern void cppInit (const bool state, const bool hasAtLiteralStrings,
 		     int headerSystemRoleIndex, int headerLocalRoleIndex)
 {
 	BraceFormat = state;
+
+	CXX_DEBUG_PRINT("cppInit: brace format is %d",BraceFormat);
+
+	externalParserBlockNestLevel = 0;
 
 	if (Cpp.lang == LANG_IGNORE)
 	{
@@ -439,8 +462,37 @@ static bool isIgnoreBranch (void)
 	 *  en route. This may have allowed earlier branches containing complete
 	 *  statements to be followed, but we must follow no further branches.
 	 */
-	if (Cpp.resolveRequired  &&  ! BraceFormat)
+
+	/*
+	* CXX: Force a single branch if the external parser (cxx) block nest level at the beginning
+	* of this conditional is not equal to the current block nest level (at exit of the first branch).
+	*
+	* Follow both branches example: (same state at enter and exit)
+	*
+	* #if something
+	*     xxxxx;
+	* #else
+	*     yyyy;
+	* #endif
+	*
+	* Follow single branch example: (different block level at enter and exit)
+	*
+	*    if {
+	* #if something
+    *    } else x;
+	* #else
+	*    }
+	* #endif
+	*/
+
+	if (
+			(Cpp.resolveRequired || (ifdef->enterExternalParserBlockNestLevel != externalParserBlockNestLevel)) &&
+			(!BraceFormat)
+		)
+	{
+		CXX_DEBUG_PRINT("Choosing single branch");
 		ifdef->singleBranch = true;
+	}
 
 	/*  We will ignore this branch in the following cases:
 	 *
@@ -491,6 +543,7 @@ static bool pushConditional (const bool firstBranchChosen)
 		ifdef->ignoring = (bool) (ignoreAllBranches || (
 				! firstBranchChosen  &&  ! BraceFormat  &&
 				(ifdef->singleBranch || !doesExaminCodeWithInIf0Branch)));
+		ifdef->enterExternalParserBlockNestLevel = externalParserBlockNestLevel;
 		ignoreBranch = ifdef->ignoring;
 	}
 	return ignoreBranch;
@@ -509,6 +562,9 @@ static bool popConditional (void)
 static int makeDefineTag (const char *const name, const char* const signature, bool undef)
 {
 	const bool isFileScope = (bool) (! isInputHeaderFile ());
+
+	if (!isLanguageEnabled (Cpp.lang))
+		return CORK_NIL;
 
 	if (!Cpp.defineMacroKind)
 		return CORK_NIL;
@@ -538,7 +594,7 @@ static int makeDefineTag (const char *const name, const char* const signature, b
 		e.isFileScope  = isFileScope;
 		if (isFileScope)
 			markTagExtraBit (&e, XTAG_FILE_SCOPE);
-		e.truncateLine = true;
+		e.truncateLineAfterTag = true;
 		e.extensionFields.signature = signature;
 
 		r = makeTagEntry (&e);
@@ -559,8 +615,12 @@ static bool doesCPreProRunAsStandaloneParser (void)
 static void makeIncludeTag (const  char *const name, bool systemHeader)
 {
 	tagEntryInfo e;
-	int role_index = systemHeader? Cpp.headerSystemRoleIndex: Cpp.headerLocalRoleIndex;
+	int role_index;
 
+	if (!isLanguageEnabled (Cpp.lang))
+		return;
+
+	role_index = systemHeader? Cpp.headerSystemRoleIndex: Cpp.headerLocalRoleIndex;
 	if (role_index == ROLE_INDEX_DEFINITION)
 		return;
 
@@ -573,7 +633,7 @@ static void makeIncludeTag (const  char *const name, bool systemHeader)
 
 		initRefTagEntry (&e, name, Cpp.headerKind, role_index);
 		e.isFileScope  = false;
-		e.truncateLine = true;
+		e.truncateLineAfterTag = true;
 		makeTagEntry (&e);
 
 		if (doesCPreProRunAsStandaloneParser ())
@@ -705,6 +765,7 @@ static bool directiveHash (const int c)
 			stringMatch (directive, "else"))
 	{
 		ignore = setIgnore (isIgnoreBranch ());
+		CXX_DEBUG_PRINT("Found #elif or #else: ignore is %d",ignore);
 		if (! ignore  &&  stringMatch (directive, "else"))
 			chooseBranch ();
 		Cpp.directive.state = DRCTV_NONE;
@@ -1177,8 +1238,6 @@ process:
 
 static void findCppTags (void)
 {
-	CXX_DEBUG_INIT();
-
 	cppInit (0, false, false, false,
 			 NULL, 0, NULL, 0, 0);
 

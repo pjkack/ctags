@@ -153,15 +153,8 @@ bool cxxParserParseBlockHandleOpeningBracket(void)
 	return true;
 }
 
-//
-// This is the toplevel scanning function. It's a forward-only scanner that keeps
-// accumulating tokens in the chain until either a characteristic token is found
-// or the statement ends. When a characteristic token is found it usually enters
-// a specialized scanning routine (e.g for classes, namespaces, structs...).
-// When the statement ends without finding any characteristic token the chain
-// is passed to an analysis routine which does a second scan pass.
-//
-bool cxxParserParseBlock(bool bExpectClosingBracket)
+
+static bool cxxParserParseBlockInternal(bool bExpectClosingBracket)
 {
 	CXX_DEBUG_ENTER();
 
@@ -212,17 +205,48 @@ process_token:
 				{
 					case CXXKeywordNAMESPACE:
 					{
-						if(cxxScopeGetType() == CXXScopeTypeNamespace ||
-						   cxxScopeGetType() == CXXScopeTypeFunction)
+						enum CXXScopeType eScopeType = cxxScopeGetType();
+						
+						if(
+								(
+									// toplevel or nested within a namespace
+									(eScopeType == CXXScopeTypeNamespace) ||
+									// namespace X = Y inside a function
+									(eScopeType == CXXScopeTypeFunction)
+								) && (
+									// either certainly C++
+									g_cxx.bConfirmedCPPLanguage ||
+									// or a "sane" namespace syntax
+									(
+										!cxxTokenChainPreviousTokenOfType(
+												g_cxx.pToken,
+												CXXTokenTypeStar |
+												CXXTokenTypeAnd |
+												CXXTokenTypeKeyword
+											)
+									)
+								)
+							)
 						{
-							// namespaces can be nested only within themselves
 							if(!cxxParserParseNamespace())
 							{
 								CXX_DEBUG_LEAVE_TEXT("Failed to parse namespace");
 								return false;
 							}
 						} else {
-							// hm... syntax error?
+							// If we're pretty sure this is C++ then this is a syntax error.
+							// If we're not sure (namely when we're in a *.h file) then
+							// let's try to be flexible: treat the namespace keyword as an identifier.
+							if(!g_cxx.bConfirmedCPPLanguage)
+							{
+								CXX_DEBUG_LEAVE_TEXT(
+									"Found namespace in unexpected place, but we're not sure it's really C++ "
+									"so we'll treat it as an identifier instead"
+								);
+								g_cxx.pToken->eType = CXXTokenTypeIdentifier;
+								continue;
+							}
+
 							CXX_DEBUG_LEAVE_TEXT(
 								"Found namespace in a wrong place: we're probably out of sync"
 							);
@@ -411,6 +435,7 @@ process_token:
 					case CXXKeyword__INLINE:
 					case CXXKeyword__INLINE__:
 					case CXXKeyword__FORCEINLINE:
+					case CXXKeyword__FORCEINLINE__:
 						g_cxx.uKeywordState |= CXXParserKeywordStateSeenInline;
 						cxxTokenChainDestroyLast(g_cxx.pTokenChain);
 					break;
@@ -456,7 +481,7 @@ process_token:
 			case CXXTokenTypeSemicolon:
 			{
 				if(
-						(g_cxx.eLanguage == g_cxx.eCLanguage) &&
+						(g_cxx.eLangType == g_cxx.eCLangType) &&
 						cxxScopeIsGlobal() &&
 						(!(g_cxx.uKeywordState & CXXParserKeywordStateSeenExtern)) &&
 						(!(g_cxx.uKeywordState & CXXParserKeywordStateSeenTypedef))
@@ -533,6 +558,13 @@ process_token:
 			break;
 			case CXXTokenTypeClosingBracket:
 				// scope finished
+				if(!bExpectClosingBracket)
+				{
+					CXX_DEBUG_LEAVE_TEXT(
+						"Found unexpected closing bracket: probably preprocessing problem"
+					);
+					return false;
+				}
 				CXX_DEBUG_LEAVE_TEXT("Closing bracket!");
 				cxxParserNewStatement();
 				return true;
@@ -581,4 +613,20 @@ process_token:
 
 	CXX_DEBUG_LEAVE_TEXT("WARNING: Not reached");
 	return true;
+}
+
+//
+// This is the toplevel scanning function. It's a forward-only scanner that keeps
+// accumulating tokens in the chain until either a characteristic token is found
+// or the statement ends. When a characteristic token is found it usually enters
+// a specialized scanning routine (e.g for classes, namespaces, structs...).
+// When the statement ends without finding any characteristic token the chain
+// is passed to an analysis routine which does a second scan pass.
+//
+bool cxxParserParseBlock(bool bExpectClosingBracket)
+{
+	cppPushExternalParserBlock();
+	bool bRet = cxxParserParseBlockInternal(bExpectClosingBracket);
+	cppPopExternalParserBlock();
+	return bRet;
 }

@@ -35,7 +35,13 @@
 #include "routines.h"
 #include "xtag.h"
 #include "routines.h"
+#include "error.h"
+#include "interactive.h"
 #include "writer.h"
+
+#ifdef HAVE_JANSSON
+#include <jansson.h>
+#endif
 
 /*
 *   MACROS
@@ -243,8 +249,11 @@ static optionDescription LongOptionDescription [] = {
 #else
  {0,"       Uses the specified type of EX command to locate tags [mix]."},
 #endif
- {1,"  --extra=[+|-]flags"},
+ {1,"  --extras=[+|-]flags"},
  {1,"      Include extra tag entries for selected information (flags: \"Ffq.\") [F]."},
+ {1,"  --extras-<LANG|*>=[+|-]flags"},
+ {1,"      Include <LANG> own extra tag entries for selected information"},
+ {1,"      (flags: --list-extras=<LANG>)."},
  {1,"  --fields=[+|-]flags"},
  {1,"      Include selected extension fields (flags: \"afmikKlnsStzZ\") [fks]."},
  {1,"  --fields-<LANG|*>=[+|-]flags"},
@@ -306,7 +315,7 @@ static optionDescription LongOptionDescription [] = {
  {1,"       Output list of alias patterns."},
  {1,"  --list-extensions=[language|all]"},
  {1,"       Output list of language extensions in mapping."},
- {1,"  --list-extra"},
+ {1,"  --list-extras"},
  {1,"       Output list of extra tag flags."},
  {1,"  --list-features"},
  {1,"       Output list of features."},
@@ -334,7 +343,7 @@ static optionDescription LongOptionDescription [] = {
  {1,"       Output list of flags which can be used in a regex parser definition."},
  {1,"  --machinable=[yes|no]"},
  {1,"       Use tab separated representation in --list- option output. [no]"},
- {1,"       --list-extra, --list-fields, --list-kinds-full, and --list-params support this option."},
+ {1,"       --list-extras, --list-fields, --list-kinds-full, and --list-params support this option."},
  {1,"       Suitable for scripting. Specify before --list-* option."},
  {1,"  --map-<LANG>=[+|-]pattern|extension"},
  {1,"       Set or add(+) a map for <LANG>."},
@@ -386,8 +395,10 @@ static optionDescription LongOptionDescription [] = {
  {1,"       Define regular expression for locating tags in specific language."},
  {0,"  --sort=[yes|no|foldcase]"},
  {0,"       Should tags be sorted (optionally ignoring case) [yes]?"},
- {0,"  --tag-relative=[yes|no]"},
+ {0,"  --tag-relative=[yes|no|always|never]"},
  {0,"       Should paths be relative to location of tag file [no; yes when -e]?"},
+ {0,"       always: be relative even if input files are passed in with absolute paths" },
+ {0,"       never:  be absolute even if input files are passed in with relative paths" },
  {1,"  --totals=[yes|no]"},
  {1,"       Print statistics about input and tag files [no]."},
  {1,"  --verbose=[yes|no]"},
@@ -396,7 +407,7 @@ static optionDescription LongOptionDescription [] = {
  {1,"       Print version identifier to standard output."},
  {1,"  --with-list-header=[yes|no]"},
  {1,"       Preprend the column descriptions in --list- output. [yes]"},
- {1,"       --list-extra, --list-fields, --list-kinds-full, and --list-params support this option."},
+ {1,"       --list-extras, --list-fields, --list-kinds-full, and --list-params support this option."},
  {1,"       Specify before --list-* option."},
 #ifdef HAVE_COPROC
  {1,"  --xcmd-<LANG>=parser_command_path|parser_command_name"},
@@ -414,6 +425,10 @@ static optionDescription LongOptionDescription [] = {
  {1,"  --_force-quit=[num]"},
  {1,"       Quit when the option is processed. Useful to debug the chain"},
  {1,"       of loading option files."},
+#ifdef HAVE_JANSSON
+ {0,"  --_interactive"},
+ {0,"       Enter interactive mode (json over stdio)."},
+#endif
  {1,"  --_list-roles=[[language|all]:[kindletters|*]]"},
  {1,"       Output list of all roles of tag kind(s) specified for language(s)."},
  {1,"       e.g. --_list-roles=Make:I"},
@@ -475,9 +490,13 @@ static const char *const Features [] = {
 #endif
 #ifdef HAVE_JANSSON
 	"json",
+	"interactive",
 #endif
 #ifdef HAVE_LIBYAML
 	"yaml",
+#endif
+#ifdef CASE_INSENSITIVE_FILENAMES
+	"case-insensitive-filenames",
 #endif
 	NULL
 };
@@ -725,7 +744,7 @@ static void setEtagsMode (void)
 	Option.etags = true;
 	Option.sorted = SO_UNSORTED;
 	Option.lineDirectives = false;
-	Option.tagRelative = true;
+	Option.tagRelative = TREL_YES;
 	setTagWriter (WRITER_ETAGS);
 }
 
@@ -1095,11 +1114,12 @@ static void processExcmdOption (
 	}
 }
 
-static void resetXtags (bool mode)
+static void resetXtags (langType lang, bool mode)
 {
 	int i;
-	for (i = 0; i < XTAG_COUNT; i++)
-		enableXtag (i, mode);
+	for (i = 0; i < countXtags (); i++)
+		if ((lang == LANG_AUTO) || (lang == getXtagOwner (i)))
+			enableXtag (i, mode);
 }
 
 static void processExtraTagsOption (
@@ -1113,13 +1133,16 @@ static void processExtraTagsOption (
 	bool inLongName = false;
 	const char *x;
 
+	if (strcmp (option, "extra") == 0)
+		error(WARNING, "--extra option is obsolete; use --extras instead");
+
 	if (*p == '*')
 	{
-		resetXtags (true);
+		resetXtags (LANG_IGNORE, true);
 		p++;
 	}
 	else if (*p != '+'  &&  *p != '-')
-		resetXtags (false);
+		resetXtags (LANG_IGNORE, false);
 
 	longName = vStringNewOrClear (longName);
 
@@ -1152,7 +1175,7 @@ static void processExtraTagsOption (
 				      "unexpected character in extra specification: \'%c\'",
 				      c);
 			x = vStringValue (longName);
-			t = getXtagTypeForName (x);
+			t = getXtagTypeForNameAndLanguage (x, LANG_IGNORE);
 
 			if (t == XTAG_UNKNOWN)
 				error(WARNING, "Unsupported parameter '{%s}' for \"%s\" option",
@@ -1243,7 +1266,7 @@ static void processFieldsOption (
 			}
 
 			if (t == FIELD_UNKNOWN)
-				error(FATAL, "nosuch field: \'%s\'", vStringValue (longName));
+				error(FATAL, "no such field: \'%s\'", vStringValue (longName));
 
 			enableField (t, mode, true);
 
@@ -1411,6 +1434,22 @@ static void processHelpOption (
 	printOptionDescriptions (LongOptionDescription);
 	exit (0);
 }
+
+#ifdef HAVE_JANSSON
+static void processInteractiveOption (
+		const char *const option CTAGS_ATTR_UNUSED,
+		const char *const parameter CTAGS_ATTR_UNUSED)
+{
+	Option.interactive = true;
+	Option.sorted = SO_UNSORTED;
+	setMainLoop (interactiveLoop, NULL);
+	setErrorPrinter (jsonErrorPrinter, NULL);
+	setTagWriter (WRITER_JSON);
+	enablePtag (PTAG_JSON_OUTPUT_VERSION, true);
+
+	json_set_alloc_funcs (eMalloc, eFree);
+}
+#endif
 
 static void processIf0Option (const char *const option,
 							  const char *const parameter)
@@ -1779,10 +1818,26 @@ static void processListAliasesOption (
 	exit (0);
 }
 
-static void processListExtraOption (
+static void processListExtrasOption (
 		const char *const option CTAGS_ATTR_UNUSED, const char *const parameter CTAGS_ATTR_UNUSED)
 {
-	printXtags ();
+	if (parameter [0] == '\0' || strcasecmp (parameter, "all") == 0)
+	{
+		initializeParser (LANG_AUTO);
+		printXtags (LANG_AUTO);
+	}
+	else
+	{
+		langType language = getNamedLanguage (parameter, 0);
+		if (language == LANG_IGNORE)
+			error (FATAL, "Unknown language \"%s\" in \"%s\" option", parameter, option);
+		else
+		{
+			initializeParser (language);
+			printXtags (language);
+		}
+
+	}
 	exit (0);
 }
 
@@ -2146,6 +2201,21 @@ static void processSortOption (
 		error (FATAL, "Invalid value for \"%s\" option", option);
 }
 
+static void processTagRelative (
+		const char *const option, const char *const parameter)
+{
+	if (isFalse (parameter))
+		Option.tagRelative = TREL_NO;
+	else if (isTrue (parameter))
+		Option.tagRelative = TREL_YES;
+	else if (strcasecmp (parameter, "always") == 0)
+		Option.tagRelative = TREL_ALWAYS;
+	else if (strcasecmp (parameter, "never") == 0)
+		Option.tagRelative = TREL_NEVER;
+	else
+		error (FATAL, "Invalid value for \"%s\" option", option);
+}
+
 static void installHeaderListDefaults (void)
 {
 	Option.headerExt = stringListNewFromArgv (HeaderExtensions);
@@ -2429,7 +2499,7 @@ static bool* redirectToXtag(const booleanOption *const option)
 
 	enableXtag (t, default_value);
 
-	return &(getXtagDesc (t)->enabled);
+	return &(getXtagSpec (t)->enabled);
 }
 
 /*
@@ -2443,10 +2513,14 @@ static parametricOption ParametricOptions [] = {
 	{ "exclude",                processExcludeOption,           false,  STAGE_ANY },
 	{ "excmd",                  processExcmdOption,             false,  STAGE_ANY },
 	{ "extra",                  processExtraTagsOption,         false,  STAGE_ANY },
+	{ "extras",                 processExtraTagsOption,         false,  STAGE_ANY },
 	{ "fields",                 processFieldsOption,            false,  STAGE_ANY },
 	{ "filter-terminator",      processFilterTerminatorOption,  true,   STAGE_ANY },
 	{ "format",                 processFormatOption,            true,   STAGE_ANY },
 	{ "help",                   processHelpOption,              true,   STAGE_ANY },
+#ifdef HAVE_JANSSON
+	{ "_interactive",            processInteractiveOption,       true,   STAGE_ANY },
+#endif
 	{ "if0",                    processIf0Option,               false,  STAGE_ANY },
 #ifdef HAVE_ICONV
 	{ "input-encoding",         processInputEncodingOption,     false,  STAGE_ANY },
@@ -2462,7 +2536,7 @@ static parametricOption ParametricOptions [] = {
 	{ "license",                processLicenseOption,           true,   STAGE_ANY },
 	{ "list-aliases",           processListAliasesOption,       true,   STAGE_ANY },
 	{ "list-extensions",        processListExtensionsOption,    true,   STAGE_ANY },
-	{ "list-extra",             processListExtraOption,        true,   STAGE_ANY },
+	{ "list-extras",            processListExtrasOption,        true,   STAGE_ANY },
 	{ "list-features",          processListFeaturesOption,      true,   STAGE_ANY },
 	{ "list-fields",            processListFieldsOption,        true,   STAGE_ANY },
 	{ "list-file-kind",         processListFileKindOption,      true,   STAGE_ANY },
@@ -2481,6 +2555,7 @@ static parametricOption ParametricOptions [] = {
 	{ "pattern-length-limit",   processPatternLengthLimit,      true,   STAGE_ANY },
 	{ "pseudo-tags",            processPseudoTags,              false,  STAGE_ANY },
 	{ "sort",                   processSortOption,              true,   STAGE_ANY },
+	{ "tag-relative",           processTagRelative,             true,   STAGE_ANY },
 	{ "version",                processVersionOption,           true,   STAGE_ANY },
 	{ "_echo",                  processEchoOption,              false,  STAGE_ANY },
 	{ "_force-quit",            processForceQuitOption,         false,  STAGE_ANY },
@@ -2502,7 +2577,6 @@ static booleanOption BooleanOptions [] = {
 #ifdef RECURSE_SUPPORTED
 	{ "recurse",        &Option.recurse,                false, STAGE_ANY },
 #endif
-	{ "tag-relative",   &Option.tagRelative,            true,  STAGE_ANY },
 	{ "totals",         &Option.printTotals,            true,  STAGE_ANY },
 	{ "verbose",        &Option.verbose,                false, STAGE_ANY },
 	{ "with-list-header", &Option.withListHeader,       true,  STAGE_ANY },
@@ -2614,6 +2688,24 @@ static void enableLanguageField (langType language, const char *field, bool mode
 	}
 }
 
+static void enableLanguageXtag (langType language, const char *xtag, bool mode)
+{
+
+	xtagType x;
+
+	x = getXtagTypeForNameAndLanguage (xtag, language);
+	if (x == XTAG_UNKNOWN)
+		error(FATAL, "no such extra: \'%s\'", xtag);
+	enableXtag (x, mode);
+	if (language == LANG_AUTO)
+	{
+		xtagType xtag_next = x;
+
+		while ((xtag_next = nextSiblingXtag (xtag_next)) != XTAG_UNKNOWN)
+			enableXtag (xtag_next, mode);
+	}
+}
+
 static bool processLangSpecificFieldsOption (const char *const option,
 						const char *const parameter)
 {
@@ -2655,8 +2747,12 @@ static bool processLangSpecificFieldsOption (const char *const option,
 		resetFieldsOption (language, true);
 		p++;
 	}
-	else if (*p == '{')
+	else if (*p == '{' || *p == '\0')
+	{
 		resetFieldsOption (language, false);
+		if (*p == '\0')
+			return true;
+	}
 	else if (*p != '+' && *p != '-')
 		error (WARNING, "Wrong per language field specification: %s", p);
 
@@ -2705,6 +2801,107 @@ static bool processLangSpecificFieldsOption (const char *const option,
 			break;
 		}
 	}
+#undef PREFIX_LEN
+#undef PREFIX
+	return true;
+}
+
+static bool processLangSpecificExtraOption (const char *const option,
+						const char *const parameter)
+{
+#define PREFIX "extras-"
+#define PREFIX_LEN strlen(PREFIX)
+	const char* lang;
+	size_t len;
+	langType language = LANG_IGNORE;
+	const char *p = parameter;
+	int c;
+	static vString * longName;
+	bool mode = true;
+	const char *x;
+	bool inLongName = false;
+
+	if ( strncmp (option, PREFIX, PREFIX_LEN) != 0 )
+		return false;
+
+	lang = option + PREFIX_LEN;
+	len = strlen (lang);
+
+	if (len == 0)
+		error (FATAL, "No language given in \"%s\" option", option);
+	else if (len == 1 && lang[0] == '*')
+		language = LANG_AUTO;
+	else
+		language = getNamedLanguage (lang, len);
+
+	if (language == LANG_IGNORE)
+	{
+		error (WARNING, "Unknown language: %s (ignoring \"--%s\")", lang, option);
+		/* The option is consumed in tihs function. */
+		return true;
+	}
+
+	initializeParser (language);
+
+	if (*p == '*')
+	{
+		resetXtags (language, true);
+		p++;
+	}
+	else if (*p == '{' || *p == '\0')
+	{
+		resetXtags (language, false);
+		if (*p == '\0')
+			return true;
+	}
+	else if (*p != '+' && *p != '-')
+		error (WARNING, "Wrong per language extra specification: %s", p);
+
+	longName = vStringNewOrClear (longName);
+	while ((c = *p++) != '\0')
+	{
+		switch (c)
+		{
+		case '+':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = true;
+			break;
+		case '-':
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				mode = false;
+			break;
+		case '{':
+			if (inLongName)
+				error (FATAL,
+				       "unexpected character in extra specification: \'%c\'",
+				       c);
+			inLongName = true;
+			break;
+		case '}':
+			if (!inLongName)
+				error (FATAL,
+				       "unexpected character in extra specification: \'%c\'",
+				       c);
+
+			x = vStringValue (longName);
+			enableLanguageXtag (language, x, mode);
+			inLongName = false;
+			vStringClear (longName);
+			break;
+		default:
+			if (inLongName)
+				vStringPut (longName, c);
+			else
+				error (FATAL,
+				       "only long name can be used in per language extra spec: \'%c\'",
+				       c);
+			break;
+		}
+	}
 	return true;
 }
 
@@ -2723,6 +2920,8 @@ static void processLongOption (
 		;
 	else if (processLangSpecificFieldsOption(option, parameter))
 		 ;
+	else if (processLangSpecificExtraOption(option, parameter))
+		;
 	else if (processParametricOption (option, parameter))
 		;
 	else if (processKindOption (option, parameter))
